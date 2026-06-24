@@ -11,6 +11,20 @@ It adds ergonomic layers on top of the mature native `hf jobs` surface:
 
 > **Status:** beta. `top`, the selector commands, and back-navigation work. `pick` is a stub. Tested against `huggingface_hub` ≥ 0.25. See [SPEC.md](SPEC.md) for the full design and roadmap.
 
+## Demo
+
+![hf-jobsx demo](demo/hf-jobsx-demo.gif)
+
+A 30s walkthrough: the `jq` ritual → selectors → the `top` monitor with sparklines,
+inline tail-logs, and clickthrough. Generated deterministically from fake data
+(no compute needed) — see [`demo/make_cast.py`](demo/make_cast.py) to regenerate or tweak.
+
+Play the source cast locally for full fidelity (text, copy-pasteable):
+
+```bash
+asciinema play demo/hf-jobsx-demo.cast
+```
+
 ## Install
 
 ```bash
