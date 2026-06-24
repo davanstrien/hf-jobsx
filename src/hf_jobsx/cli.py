@@ -137,7 +137,7 @@ def logs(
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Resolve selector → exec into native `hf jobs logs -f <id>`. (Phase 1)"""
+    """Resolve a selector to one job and follow its logs (streams native `hf jobs logs`)."""
     client, job = _require_single_or_die(selector, namespace=namespace, token=token)
     extra = []
     if follow:
@@ -153,7 +153,7 @@ def ssh(
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Resolve selector → exec into native `hf jobs ssh <id>`. (Phase 1)"""
+    """Resolve a selector to one running job and SSH into it (`hf jobs ssh`)."""
     client, job = _require_single_or_die(selector, namespace=namespace, token=token)
     typer.echo(f"jobsx: ssh {job.id}  {stage_str(job)}  {display_name(job)}", err=True)
     _exec_native(_native_argv("ssh", job.id, extra=[], namespace=client.namespace, token=token))
@@ -165,7 +165,7 @@ def cancel(
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Resolve selector → native `hf jobs cancel <id>`. (Phase 1)"""
+    """Resolve a selector to one job and cancel it (`hf jobs cancel`). Asks to confirm."""
     client, job = _require_single_or_die(selector, namespace=namespace, token=token)
     if not yes:
         confirm = typer.confirm(
@@ -182,7 +182,7 @@ def inspect(
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Resolve selector → native `hf jobs inspect <id>`. (Phase 1)"""
+    """Resolve a selector to one job and show its details (`hf jobs inspect`)."""
     client, job = _require_single_or_die(selector, namespace=namespace, token=token)
     typer.echo(f"jobsx: inspect {job.id}", err=True)
     _exec_native(_native_argv("inspect", job.id, extra=[], namespace=client.namespace, token=token))
@@ -195,7 +195,10 @@ def pick(
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Interactive jump-picker → exec into the chosen action. (Phase 2)"""
+    """Interactive jump-picker — fuzzy-filter the job list, then jump into logs/ssh.
+
+    (Not yet implemented.)
+    """
     typer.echo("`hf jobsx pick` is not implemented yet (Phase 2). See SPEC.md.", err=True)
     raise typer.Exit(code=1)
 
@@ -211,7 +214,8 @@ def top(
     ] = False,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Dense live monitor: sparklines + inline tail-log + @N indexes. (Phase 3) ⭐
+    """Dense live monitor: per-job CPU/GPU/net sparklines, status, runtime, ~cost,
+    and the inline last log line. Drill into logs/ssh with a keypress, return with Ctrl-C.
 
     By default shows only RUNNING jobs (a monitor is for active work). Pass --all to
     include scheduling/error/completed jobs too. Press j/k to move, Enter for logs,
