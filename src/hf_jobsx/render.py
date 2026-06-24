@@ -1,46 +1,298 @@
-"""`top` dense live monitor renderer. (SPEC §3 render.py) ⭐ the social artifact
+"""`top` dense live monitor. (SPEC §3 render.py) ⭐ the social artifact
 
 Tufte discipline: max data-ink, no borders/chrome/alt-screen. One rule line top
 and bottom. Direct labels. Word-sized history (sparklines).
 
-Refresh: in-place via ANSI cursor-up + clear-line (copy hf jobs stats _clear_line),
+Refresh: in-place via ANSI cursor-up + clear-line (mirrors hf jobs stats _clear_line).
 NO alternate screen buffer — preserves scrollback, clean Ctrl-C, no termios raw mode.
 
-    LINE_UP = "\\033[1A"; LINE_CLEAR = "\\x1b[2K"
-    clear_lines(n): for _ in range(n): print(LINE_UP, end=LINE_CLEAR)
-
 Status glyphs (REAL JobStage members, no phantom PENDING):
-    ● RUNNING   ○ SCHEDULING   ✕ ERROR   ■ CANCELED   ✓ COMPLETED   🗑 DELETED
+    ● RUNNING(green) ○ SCHEDULING(yellow) ✕ ERROR(red) ■ CANCELED(dim)
+    ✓ COMPLETED(dim) 🗑 DELETED(dim)
 
 Sparkline coloring: green normal, yellow sustained >85%, RED when 0% while RUNNING
 (the "GPU flatlined" stall signal — the hero frame of the demo gif).
-
-Layout drops columns gracefully under width: cost first, then shrink sparklines,
-status glyph + id stay last.
-
-NOT YET IMPLEMENTED (Phase 3).
 """
 
 from __future__ import annotations
 
+import shutil
+import sys
+import threading
+import time
+from typing import TYPE_CHECKING, Any
+
+from hf_jobsx.metrics import MetricsFanIn, MonitorState, accrued_cost, to_sparkline
+from hf_jobsx.selectors import display_name, fmt_duration, stage_str
+
+if TYPE_CHECKING:
+    from hf_jobsx.jobs_client import JobsClient
+
 LINE_UP = "\033[1A"
 LINE_CLEAR = "\x1b[2K"
+RULE = "─"
+
+# ANSI colors (basic 8 — portable, no truecolor needed)
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+STAGE_GLYPH = {
+    "RUNNING": f"{GREEN}●{RESET}",
+    "SCHEDULING": f"{YELLOW}○{RESET}",
+    "ERROR": f"{RED}✕{RESET}",
+    "CANCELED": f"{DIM}■{RESET}",
+    "COMPLETED": f"{DIM}✓{RESET}",
+    "DELETED": f"{DIM}🗑{RESET}",
+}
 
 
-def clear_lines(n: int) -> None:
-    """Move cursor up n lines and clear each (in-place refresh, no scrollback loss)."""
-    for _ in range(n):
-        print(LINE_UP, end=LINE_CLEAR)
+def _sparkline_color(latest: float | None, stage: str) -> str:
+    """Color a sparkline: red if 0% while RUNNING (stall), yellow if >85%, else green."""
+    if stage == "RUNNING" and (latest is None or latest <= 0.5):
+        return RED
+    if latest is not None and latest > 85:
+        return YELLOW
+    return GREEN
 
 
-def render_frame() -> None:
-    """Draw the full top table. TODO Phase 3."""
-    raise NotImplementedError("Phase 3")
+def _truncate(s: str, width: int) -> str:
+    """Ellipsize a string to width (handles ANSI-stripped display width)."""
+    if len(s) <= width:
+        return s
+    if width <= 1:
+        return s[:width]
+    return s[: width - 1] + "…"
 
 
-def run_top(*, namespace: str | None, refresh: float, token: str | None) -> None:
-    """Frame loop: MetricsFanIn + ring buffers + inline tail-log poll + render_frame.
+# --------------------------------------------------------------------------- #
+# Rendering (pure-ish: state snapshot → list[str] lines)
+# --------------------------------------------------------------------------- #
 
-    TODO Phase 3.
-    """
-    raise NotImplementedError("Phase 3")
+
+def _cost_str(cost: float | None) -> str:
+    if cost is None:
+        return "—"
+    if cost < 0.01:
+        return f"$0.0{int(cost * 100)}"  # sub-cent: $0.00 style, not milli-dollars
+    return f"${cost:.2f}"
+
+
+def _clean_log_line(line: str) -> str:
+    """Strip ANSI + collapse whitespace from a log line for inline display."""
+    import re
+
+    line = re.sub(r"\x1b\[[0-9;]*m", "", line)  # strip ANSI color codes
+    return " ".join(line.split())  # collapse whitespace/newlines
+
+
+def render_lines(snap: dict[str, Any], *, limit: int, width: int) -> list[str]:
+    """Render the full table as a list of display lines. Caller prints + clears."""
+    jobs = snap["jobs"][:limit]
+    rings = snap["rings"]
+    tails = snap["tail_logs"]
+    pricing = snap["pricing"]
+
+    n_running = sum(1 for j in snap["jobs"] if stage_str(j) == "RUNNING")
+    n_error = sum(1 for j in snap["jobs"] if stage_str(j) == "ERROR")
+
+    lines: list[str] = []
+    title = f"{BOLD} HF Jobs{RESET}"
+    status = f"{n_running} running" + (f" / {RED}{n_error} error{RESET}" if n_error else "")
+    lines.append(f"{title}{status:>50}")
+    lines.append(RULE * width)
+
+    # Column layout (responsive): @N cpu gpu net id name st run cost | log(rest)
+    # ~69 chars incl. separators before the optional cost + log columns
+    fixed_no_log = 4 + 9 + 9 + 9 + 10 + 16 + 2 + 6 + 4
+    fixed_with_cost = fixed_no_log + 7  # ~76
+    # Drop cost column under ~96 cols so the log line gets room; under ~80 drop logs too.
+    show_cost = width >= 96
+    show_log = width >= 82
+    log_width = max(0, width - (fixed_with_cost if show_cost else fixed_no_log)) if show_log else 0
+
+    for i, job in enumerate(jobs):
+        jid = job.id[:8]
+        name = _truncate(display_name(job), 16)
+        stage = stage_str(job)
+        glyph = STAGE_GLYPH.get(stage, DIM + "·" + RESET)
+        run = fmt_duration(job)
+        cost = _cost_str(accrued_cost(job, pricing))
+
+        ring = rings.get(job.id, [])
+        # CPU
+        cpu_spark = to_sparkline_deque(ring, "cpu_pct")
+        cpu_latest = ring[-1].cpu_pct if ring else None
+        cpu = f"{_sparkline_color(cpu_latest, stage)}{cpu_spark}{RESET}"
+        # GPU
+        gpu_latest = ring[-1].gpu_pct if ring else None
+        gpu_spark = to_sparkline_deque(ring, "gpu_pct")
+        gpu_color = _sparkline_color(gpu_latest, stage)
+        gpu = f"{gpu_color}{gpu_spark}{RESET}" if ring else f"{DIM}{' ' * 8}{RESET}"
+        # NET
+        net_spark = to_sparkline_deque(ring, "net_bps")
+        net = f"{GREEN}{net_spark}{RESET}" if ring else f"{DIM}{' ' * 8}{RESET}"
+
+        cost = _cost_str(accrued_cost(job, pricing))
+        cost_col = f" {cost:>6}  " if show_cost else " "
+        log = _clean_log_line(tails.get(job.id, "")) if log_width > 10 else ""
+        log = (
+            _truncate(log, log_width)
+            if log
+            else (DIM + "(no logs yet)" + RESET if log_width > 10 else "")
+        )
+
+        lines.append(
+            f" {DIM}@{i:<2}{RESET} {cpu} {gpu} {net}  {jid:<10} "
+            f"{name:<16} {glyph} {run:>5}{cost_col}{log}"
+        )
+
+    if not jobs:
+        lines.append(f" {DIM}no jobs found{RESET}")
+
+    lines.append(RULE * width)
+    lines.append(f" {DIM}Ctrl-C to quit   ·   hf jobsx logs -f @N to follow a job's stream{RESET}")
+    return lines
+
+
+def to_sparkline_deque(ring: list, attr: str, *, width: int = 8) -> str:
+    """Adapter: render a list (snapshot copy) as a sparkline."""
+    from collections import deque
+
+    return to_sparkline(deque(ring), attr, width=width)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# The run loop
+# --------------------------------------------------------------------------- #
+
+
+def _refresh_jobs_loop(
+    client: JobsClient, state: MonitorState, stop: threading.Event, interval: float
+) -> None:
+    """Periodically refresh the jobs list + pricing."""
+    try:
+        state.set_pricing(client.hardware_pricing())
+    except Exception:
+        pass
+    while not stop.wait(interval):
+        try:
+            jobs = client.list_jobs()
+            state.set_jobs(jobs)
+        except Exception:
+            pass
+
+
+def _poll_logs_loop(
+    client: JobsClient, state: MonitorState, stop: threading.Event, interval: float
+) -> None:
+    """Periodically fetch tail logs. RUNNING every interval; ERROR once (frozen logs)."""
+    fetched_terminal: set[str] = set()
+    while not stop.wait(interval):
+        snap_jobs = state.jobs
+        active = [j for j in snap_jobs if stage_str(j) in {"RUNNING", "ERROR"}]
+        for job in active:
+            if stop.is_set():
+                return
+            # ERROR jobs: fetch once (logs are frozen), then never again.
+            if stage_str(job) == "ERROR":
+                if job.id in fetched_terminal:
+                    continue
+                fetched_terminal.add(job.id)
+            try:
+                lines = list(client.fetch_logs(job.id, follow=False, tail=3))
+                if lines:
+                    state.set_tail(job.id, lines[-1])
+            except Exception:
+                pass
+
+
+def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> None:
+    """Frame loop: stream metrics into ring buffers + poll tail logs + render in-place."""
+    width = shutil.get_terminal_size().columns
+    state = MonitorState()
+    stop = threading.Event()
+
+    # Initial job fetch (so first frame isn't empty)
+    try:
+        jobs = client.list_jobs()
+        state.set_jobs(jobs)
+    except Exception as e:
+        print(f"{RED}jobsx: failed to list jobs: {e}{RESET}", file=sys.stderr)
+        return
+    try:
+        state.set_pricing(client.hardware_pricing())
+    except Exception:
+        pass
+
+    # Start metrics fan-in for RUNNING jobs
+    running_ids = [j.id for j in jobs if stage_str(j) == "RUNNING"]
+    fanin = MetricsFanIn(client, state)
+    if running_ids:
+        fanin.start(running_ids)
+
+    # Background refreshers
+    refresher = threading.Thread(
+        target=_refresh_jobs_loop,
+        args=(client, state, stop, 10.0),
+        daemon=True,
+        name="jobs-refresher",
+    )
+    refresher.start()
+    log_poller = threading.Thread(
+        target=_poll_logs_loop, args=(client, state, stop, 2.0), daemon=True, name="log-poller"
+    )
+    log_poller.start()
+
+    rendered = 0
+    try:
+        while True:
+            width = shutil.get_terminal_size().columns
+            snap = state.snapshot()
+            lines = render_lines(snap, limit=limit, width=width)
+
+            if rendered:
+                for _ in range(rendered):
+                    print(LINE_UP, end=LINE_CLEAR)
+            print("\n".join(lines))
+            sys.stdout.flush()
+            rendered = len(lines)
+
+            time.sleep(refresh)
+
+            # Restart fan-in for newly-running jobs (cheap check each frame)
+            cur_running = {j.id for j in state.jobs if stage_str(j) == "RUNNING"}
+            # Note: fan-in threads die naturally when a job goes terminal; we only add new ones
+            # via a fresh FanIn on detected new running ids (simplified: skip for POC — jobs
+            # present at start are streamed; transitions are rare within a monitor session).
+            _maybe_start_new_streams(fanin, client, state, cur_running)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        fanin.stop()
+        # Clear the table, leave a clean line
+        if rendered:
+            for _ in range(rendered):
+                print(LINE_UP, end=LINE_CLEAR)
+            sys.stdout.flush()
+        print(f"{DIM}jobsx: stopped{RESET}")
+
+
+_started: set[str] = set()
+_started_lock = threading.Lock()
+
+
+def _maybe_start_new_streams(fanin, client, state, cur_running: set[str]) -> None:
+    """Start metric streams for running jobs we aren't yet tracking (best-effort)."""
+    new = cur_running - _started
+    if not new:
+        return
+    with _started_lock:
+        to_start = [j for j in new if j not in _started]
+        _started.update(to_start)
+    if to_start:
+        fanin.start(to_start)

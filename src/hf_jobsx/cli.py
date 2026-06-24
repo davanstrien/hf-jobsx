@@ -131,7 +131,9 @@ def logs(
     follow: Annotated[
         bool, typer.Option("-f", "--follow", help="Stream until job completes.")
     ] = False,
-    tail: Annotated[int | None, typer.Option("--tail", help="Last N lines (passed to native hf jobs logs).")] = None,
+    tail: Annotated[
+        int | None, typer.Option("--tail", help="Last N lines (passed to native hf jobs logs).")
+    ] = None,
     namespace: Annotated[str | None, typer.Option("--namespace", "-n")] = None,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
@@ -203,8 +205,15 @@ def top(
     refresh: Annotated[
         float, typer.Option("--refresh", help="Frame interval seconds (default 0.75).")
     ] = 0.75,
+    limit: Annotated[int, typer.Option("--limit", help="Max jobs to display (default 12).")] = 12,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
     """Dense live monitor: sparklines + inline tail-log + @N indexes. (Phase 3) ⭐"""
-    typer.echo("`hf jobsx top` is not implemented yet (Phase 3). See SPEC.md.", err=True)
-    raise typer.Exit(code=1)
+    from hf_jobsx.fake import fake_client, is_fake_enabled
+    from hf_jobsx.render import run_top
+
+    if is_fake_enabled():
+        client = fake_client(token=token, namespace=namespace)
+    else:
+        client = get_client(namespace=namespace, token=token)
+    run_top(client=client, refresh=refresh, limit=limit)
