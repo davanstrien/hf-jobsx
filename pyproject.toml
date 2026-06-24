@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hf-jobsx"
+version = "0.1.0"
+description = "Ergonomic HF Jobs CLI extension: jump-picker, selectors, dense live monitor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Daniel van Strien", email = "davanstrien@gmail.com" }]
+keywords = ["huggingface", "jobs", "cli", "tui", "monitoring", "extension"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+]
+# Minimal POC deps. Add `rich` only if the built-in picker needs it.
+dependencies = [
+    "huggingface-hub>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/davanstrien/hf-jobsx"
+Repository = "https://github.com/davanstrien/hf-jobsx"
+Issues = "https://github.com/davanstrien/hf-jobsx/issues"
+
+# MUST be named `hf-jobsx` — `hf jobsx` dispatches to this console script
+# via the extension system's dispatch_unknown_top_level_extension.
+[project.scripts]
+hf-jobsx = "hf_jobsx.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hf_jobsx"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
