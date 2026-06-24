@@ -95,15 +95,21 @@ def _cbreak():
 def _read_key(timeout: float = 0.0) -> str | None:
     """Read one keystroke if available within `timeout` seconds. None if nothing.
 
-    Lowercases letters; maps arrows (up→k, down→j), Enter, Esc. Must be in _cbreak().
+    Lowercases letters; maps all four arrows to vim-style nav, Enter, Esc. Must be in _cbreak().
+    Bare Esc (no sequence following) quits; unknown escape sequences are IGNORED (not quit).
     """
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
     if not rlist:
         return None
     ch = sys.stdin.read(1)
-    if ch == "\x1b":  # escape sequence (arrows) — consume the rest non-blocking
-        rest = sys.stdin.read(2) if select.select([sys.stdin], [], [], 0)[0] else ""
-        return {"\x1b[A": "k", "\x1b[B": "j"}.get(ch + rest, "esc")
+    if ch == "\x1b":
+        # Bare Esc (nothing following) = quit. Otherwise it's an escape sequence.
+        if not select.select([sys.stdin], [], [], 0)[0]:
+            return "esc"
+        rest = sys.stdin.read(2)
+        seq = ch + rest
+        # All four arrows → nav. Unknown sequences (PgUp, Home, etc.) → ignored, not quit.
+        return {"\x1b[A": "k", "\x1b[B": "j", "\x1b[C": "j", "\x1b[D": "k"}.get(seq, "ignore")
     if ch in ("\r", "\n"):
         return "enter"  # cbreak keeps ICRNL on, so Enter arrives as \n, not \r
     return ch.lower()
@@ -277,7 +283,7 @@ def render_lines(
 
     lines.append(RULE * width)
     hint = (
-        f" {DIM}enter {action_hint}  ·  s ssh  ·  j/k move  ·  q quit   "
+        f" {DIM}enter {action_hint}  ·  s ssh  ·  ↑/↓ or j/k move  ·  q quit   "
         f"·   hf jobsx logs -f @N to follow a job's stream{RESET}"
     )
     lines.append(hint)
