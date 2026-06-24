@@ -112,6 +112,10 @@ class FakeJobsClient:
 
     namespace = "demo"
 
+    @property
+    def token(self) -> str | None:
+        return self._token
+
     def __init__(self, token: str | None = None, namespace: str | None = None) -> None:
         self._token = token
         self._namespace = namespace or "demo"

@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import select
 import shutil
+import signal
 import sys
 import termios
 import threading
@@ -180,15 +181,13 @@ def _cost_str(cost: float | None) -> str:
     if cost is None:
         return "—"
     if cost < 0.01:
-        return f"~$0.0{int(cost * 100)}"
+        return f"~${round(cost, 3):.3f}"  # ~$0.001 — round() avoids the int() truncation
     return f"~${cost:.2f}"
 
 
 def _clean_log_line(line: str) -> str:
     """Strip ANSI + collapse whitespace from a log line for inline display."""
-    import re
-
-    line = re.sub(r"\x1b\[[0-9;]*m", "", line)  # strip ANSI color codes
+    line = _ANSI_RE.sub("", line)  # strip ANSI color codes (re already imported at module)
     return " ".join(line.split())  # collapse whitespace/newlines
 
 
@@ -217,7 +216,10 @@ def render_lines(
     lines: list[str] = []
     title = f"{BOLD} HF Jobs{RESET}"
     status = f"{n_running} running" + (f" / {RED}{n_error} error{RESET}" if n_error else "")
-    lines.append(f"{title}{status:>50}")
+    # Right-align status using VISIBLE width (ANSI escapes consume 0 columns) so the
+    # error count's red codes don't misalign the text.
+    pad = max(0, width - len(" HF Jobs") - _visible_len(status))
+    lines.append(title + " " * pad + status)
     lines.append(RULE * width)
 
     # Column layout (responsive): @N cpu gpu net id name st run cost | log(rest)
@@ -271,7 +273,6 @@ def render_lines(
         )
 
         marker = f"{BOLD}▶{RESET}" if i == selected else " "
-        action_hint = "ssh" if pending_ssh else "logs"
         row = (
             f"{marker}{DIM}@{i:<2}{RESET} {cpu} {gpu} {net}  {jid:<10} "
             f"{name:<16} {glyph} {run:>5}{cost_col}{log}"
@@ -348,8 +349,16 @@ def run_top(
     """Frame loop: stream metrics into ring buffers + poll tail logs + render.
 
     running_only: hide non-running jobs (a monitor is for active work). --all shows all.
-    Keys (when stdin is a TTY): j/k move, Enter → logs, s → ssh (then Enter), q/Esc quit.
+    Keys (when stdin is a TTY): j/k or arrows move, Enter → logs, s → ssh, q/Esc quit.
+    After a drill, the native view runs as a SUBPROCESS; on exit control returns here.
+    Refuses to start if stdout isn't a TTY (would otherwise emit infinite escapes).
     """
+    if not sys.stdout.isatty():
+        print(f"{RED}jobsx: top requires a terminal (stdout is not a tty).{RESET}", file=sys.stderr)
+        return
+    # SIGTERM (e.g. `kill <pid>`) must restore the terminal too. Convert to
+    # KeyboardInterrupt so the finally blocks (alt-screen off, cbreak off) run.
+    _prev_sigterm = signal.signal(signal.SIGTERM, lambda *_: raise_kbint())
     state = MonitorState()
     stop = threading.Event()
 
@@ -405,7 +414,13 @@ def run_top(
     finally:
         stop.set()
         fanin.stop()
+        signal.signal(signal.SIGTERM, _prev_sigterm)  # restore default handler
     print(f"{DIM}jobsx: stopped{RESET}")
+
+
+def raise_kbint() -> None:
+    """SIGTERM → KeyboardInterrupt, so terminal-restoration finally blocks run."""
+    raise KeyboardInterrupt
 
 
 def _monitor_session(
@@ -433,6 +448,11 @@ def _monitor_session(
                 snap = state.snapshot()
                 if running_only:
                     snap = {**snap, "jobs": [j for j in snap["jobs"] if stage_str(j) == "RUNNING"]}
+                n_displayed = min(len(snap["jobs"]), limit)
+                # Clamp selected each frame: jobs vanish from the running-only view as they
+                # complete, so `selected` can point past the end → IndexError on Enter.
+                if n_displayed:
+                    selected = min(selected, n_displayed - 1)
                 lines = render_lines(
                     snap, limit=limit, width=width, selected=selected, pending_ssh=pending_ssh
                 )
@@ -440,7 +460,6 @@ def _monitor_session(
 
                 if interactive:
                     key = _read_key(timeout=refresh)
-                    n_displayed = min(len(snap["jobs"]), limit)
                     if key in ("q", "esc"):
                         return None
                     elif key == "j" and n_displayed:
@@ -475,9 +494,12 @@ def _drill_subprocess(action: str, job_id: str, *, client: JobsClient) -> None:
     import subprocess
 
     ns = getattr(client, "namespace", None)
+    tok = getattr(client, "token", None)
     argv = ["jobs", action, job_id]
     if ns:
         argv += ["--namespace", ns]
+    if tok:
+        argv += ["--token", tok]
     if action == "logs":
         argv.append("-f")
     hf = shutil.which("hf")

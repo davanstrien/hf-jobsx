@@ -1,7 +1,7 @@
 """hf-jobsx — ergonomic HF Jobs CLI extension.
 
-See SPEC.md for the full design. This package is a scaffold: command signatures
-are laid out but bodies are not yet implemented (Phase 0 complete = packaging + dispatch).
+Selector layer (@N, @status=…, @label=…) wrapping native hf jobs, plus `top` (dense
+live monitor with sparklines + clickthrough) and `pick` (interactive jump, TODO).
 """
 
 __version__ = "0.1.0"

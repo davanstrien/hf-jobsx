@@ -41,6 +41,12 @@ class JobsClient:
             self._namespace = info["name"]
         return self._namespace
 
+    @property
+    def token(self) -> str | None:
+        """The token passed at construction (None = use cached auth). For propagating
+        to native `hf jobs` subprocess calls (drill from top)."""
+        return self._token
+
     def list_jobs(self) -> list[JobInfo]:
         return self._api.list_jobs(namespace=self.namespace)
 
