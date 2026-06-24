@@ -10,8 +10,6 @@ Public API consumed (all top-level importable, verified):
         fetch_job_metrics, list_jobs_hardware,
     )
 Do NOT import from huggingface_hub._jobs_api (private).
-
-NOT YET IMPLEMENTED (Phase 1).
 """
 
 from __future__ import annotations
@@ -19,35 +17,52 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from huggingface_hub import HfApi, JobHardwareInfo, JobInfo
+
 if TYPE_CHECKING:
-    from huggingface_hub import JobHardwareInfo, JobInfo
+    pass
 
 
 class JobsClient:
-    """Thin wrapper. Methods are synchronous; callers handle concurrency (top) or exec (logs)."""
+    """Thin synchronous wrapper. Callers handle concurrency (top) or exec (logs)."""
 
     def __init__(self, token: str | None = None, namespace: str | None = None) -> None:
+        self._api = HfApi(token=token)
         self._token = token
         self._namespace = namespace
+        self._pricing: dict[str, JobHardwareInfo] | None = None
 
     @property
     def namespace(self) -> str:
-        """Lazily resolved via whoami(), cached. TODO Phase 1."""
-        raise NotImplementedError("Phase 1")
+        """Lazily resolved via whoami(), cached. Deferred so auth/network errors
+        become command-time errors, not import-time crashes."""
+        if self._namespace is None:
+            info = self._api.whoami(cache=True)
+            self._namespace = info["name"]
+        return self._namespace
 
     def list_jobs(self) -> list[JobInfo]:
-        raise NotImplementedError("Phase 1")
+        return self._api.list_jobs(namespace=self.namespace)
 
     def get_job(self, job_id: str) -> JobInfo:
-        raise NotImplementedError("Phase 1")
+        return self._api.inspect_job(job_id=job_id, namespace=self.namespace)
 
     def fetch_logs(self, job_id: str, *, follow: bool, tail: int | None = None) -> Iterable[str]:
-        raise NotImplementedError("Phase 1")
+        return self._api.fetch_job_logs(
+            job_id=job_id, namespace=self.namespace, follow=follow, tail=tail
+        )
 
     def fetch_metrics(self, job_id: str) -> Iterable[dict[str, Any]]:
-        """SSE stream, one dict/sec, NEVER ends. Caller must handle Ctrl-C. TODO Phase 3."""
-        raise NotImplementedError("Phase 3")
+        """SSE stream, one dict/sec, NEVER ends. Caller must handle Ctrl-C. (Phase 3)"""
+        return self._api.fetch_job_metrics(job_id=job_id, namespace=self.namespace)
 
     def hardware_pricing(self) -> dict[str, JobHardwareInfo]:
-        """list_jobs_hardware() cached on the instance. TODO Phase 3."""
-        raise NotImplementedError("Phase 3")
+        """list_jobs_hardware() cached on the instance. name → JobHardwareInfo."""
+        if self._pricing is None:
+            self._pricing = {hw.name: hw for hw in self._api.list_jobs_hardware()}
+        return self._pricing
+
+
+def get_client(*, namespace: str | None, token: str | None) -> JobsClient:
+    """Factory used by CLI commands. Returns a fresh client each invocation."""
+    return JobsClient(token=token, namespace=namespace)

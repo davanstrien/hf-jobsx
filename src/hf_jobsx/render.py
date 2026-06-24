@@ -39,5 +39,8 @@ def render_frame() -> None:
 
 
 def run_top(*, namespace: str | None, refresh: float, token: str | None) -> None:
-    """Frame loop: MetricsFanIn + ring buffers + inline tail-log poll + render_frame. TODO Phase 3."""
+    """Frame loop: MetricsFanIn + ring buffers + inline tail-log poll + render_frame.
+
+    TODO Phase 3.
+    """
     raise NotImplementedError("Phase 3")

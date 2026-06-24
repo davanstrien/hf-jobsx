@@ -23,11 +23,12 @@ def test_help_lists_subcommands():
 
 
 def test_stub_commands_are_honest():
-    """Unimplemented commands exit non-zero with a clear message (not silent success)."""
-    result = subprocess.run(
-        [sys.executable, "-m", "hf_jobsx", "resolve", "@0"],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert "not implemented" in result.stderr.lower()
+    """Unimplemented commands (pick, top) exit non-zero with a clear message."""
+    for cmd in ["pick", "top"]:
+        result = subprocess.run(
+            [sys.executable, "-m", "hf_jobsx", cmd],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0, f"{cmd} should exit non-zero"
+        assert "not implemented" in result.stderr.lower(), f"{cmd} missing stub message"
