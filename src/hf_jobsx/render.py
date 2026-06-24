@@ -18,11 +18,16 @@ Sparkline coloring: green normal, yellow sustained >85%, RED when 0% while RUNNI
 
 from __future__ import annotations
 
+import os
 import re
+import select
 import shutil
 import sys
+import termios
 import threading
 import time
+import tty
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from hf_jobsx.metrics import MetricsFanIn, MonitorState, accrued_cost, to_sparkline
@@ -67,6 +72,42 @@ def _fit(s: str, width: int) -> str:
         visible += 1
         i += 1
     return "".join(out)
+
+
+@contextmanager
+def _cbreak():
+    """Put stdin in cbreak mode (read single keystrokes, no echo, no line buffering).
+
+    Restores original termios on exit. Used for clickthrough key handling in top.
+    No-op (yields False) when stdin isn't a TTY (e.g. piped) so top still renders.
+    """
+    if not sys.stdin.isatty():
+        yield False
+        return
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        yield True
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _read_key(timeout: float = 0.0) -> str | None:
+    """Read one keystroke if available within `timeout` seconds. None if nothing.
+
+    Lowercases letters; maps arrows (up→k, down→j), Enter, Esc. Must be in _cbreak().
+    """
+    rlist, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not rlist:
+        return None
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":  # escape sequence (arrows) — consume the rest non-blocking
+        rest = sys.stdin.read(2) if select.select([sys.stdin], [], [], 0)[0] else ""
+        return {"\x1b[A": "k", "\x1b[B": "j"}.get(ch + rest, "esc")
+    if ch == "\r":
+        return "enter"
+    return ch.lower()
 
 
 def _redraw(lines: list[str], rendered: int, *, width: int) -> int:
@@ -145,12 +186,24 @@ def _clean_log_line(line: str) -> str:
     return " ".join(line.split())  # collapse whitespace/newlines
 
 
-def render_lines(snap: dict[str, Any], *, limit: int, width: int) -> list[str]:
-    """Render the full table as a list of display lines. Caller prints + clears."""
+def render_lines(
+    snap: dict[str, Any],
+    *,
+    limit: int,
+    width: int,
+    selected: int | None = None,
+    pending_ssh: bool = False,
+) -> list[str]:
+    """Render the full table as a list of display lines. Caller prints + clears.
+
+    selected: if set, the row at that index is marked with ▶ (the clickthrough cursor).
+    pending_ssh: True after pressing 's' (next Enter drills into ssh instead of logs).
+    """
     jobs = snap["jobs"][:limit]
     rings = snap["rings"]
     tails = snap["tail_logs"]
     pricing = snap["pricing"]
+    action_hint = "ssh" if pending_ssh else "logs"  # defined before loop (footer uses it)
 
     n_running = sum(1 for j in snap["jobs"] if stage_str(j) == "RUNNING")
     n_error = sum(1 for j in snap["jobs"] if stage_str(j) == "ERROR")
@@ -201,16 +254,23 @@ def render_lines(snap: dict[str, Any], *, limit: int, width: int) -> list[str]:
             else (DIM + "(no logs yet)" + RESET if log_width > 10 else "")
         )
 
-        lines.append(
-            f" {DIM}@{i:<2}{RESET} {cpu} {gpu} {net}  {jid:<10} "
+        marker = f"{BOLD}▶{RESET}" if i == selected else " "
+        action_hint = "ssh" if pending_ssh else "logs"
+        row = (
+            f"{marker}{DIM}@{i:<2}{RESET} {cpu} {gpu} {net}  {jid:<10} "
             f"{name:<16} {glyph} {run:>5}{cost_col}{log}"
         )
+        lines.append(row)
 
     if not jobs:
         lines.append(f" {DIM}no jobs found{RESET}")
 
     lines.append(RULE * width)
-    lines.append(f" {DIM}Ctrl-C to quit   ·   hf jobsx logs -f @N to follow a job's stream{RESET}")
+    hint = (
+        f" {DIM}enter {action_hint}  ·  s ssh  ·  j/k move  ·  q quit   "
+        f"·   hf jobsx logs -f @N to follow a job's stream{RESET}"
+    )
+    lines.append(hint)
     return lines
 
 
@@ -266,8 +326,14 @@ def _poll_logs_loop(
                 pass
 
 
-def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> None:
-    """Frame loop: stream metrics into ring buffers + poll tail logs + render in-place."""
+def run_top(
+    *, client: JobsClient, refresh: float = 0.75, limit: int = 12, running_only: bool = True
+) -> None:
+    """Frame loop: stream metrics into ring buffers + poll tail logs + render.
+
+    running_only: hide non-running jobs (a monitor is for active work). --all shows all.
+    Keys (when stdin is a TTY): j/k move, Enter → logs, s → ssh (then Enter), q/Esc quit.
+    """
     width = shutil.get_terminal_size().columns
     state = MonitorState()
     stop = threading.Event()
@@ -303,34 +369,86 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
     )
     log_poller.start()
 
-    # Alternate screen + hide cursor. Bulletproof in-place redraw: every frame is
-    # clear-screen + cursor-home + lines hard-fit to width (no wrapping possible).
+    drill: list[str] | None = None  # ["logs"|"ssh", job_id] set on Enter
+    selected = 0
+    pending_ssh = False
+    rendered = 0
+    interactive = False
+
+    # Alternate screen + hide cursor.
     sys.stdout.write(f"{ALT_SCREEN_ON}\x1b[?25l")
     sys.stdout.flush()
-    rendered = 0
     try:
-        while True:
-            width = shutil.get_terminal_size().columns
-            snap = state.snapshot()
-            lines = render_lines(snap, limit=limit, width=width)
-            rendered = _redraw(lines, rendered, width=width)
-            time.sleep(refresh)
+        with _cbreak() as interactive:
+            while True:
+                width = shutil.get_terminal_size().columns
+                snap = state.snapshot()
+                # Apply running-only filter to the displayed jobs.
+                if running_only:
+                    snap = {**snap, "jobs": [j for j in snap["jobs"] if stage_str(j) == "RUNNING"]}
+                lines = render_lines(
+                    snap, limit=limit, width=width, selected=selected, pending_ssh=pending_ssh
+                )
+                rendered = _redraw(lines, rendered, width=width)
 
-            # Restart fan-in for newly-running jobs (cheap check each frame)
-            cur_running = {j.id for j in state.jobs if stage_str(j) == "RUNNING"}
-            # Note: fan-in threads die naturally when a job goes terminal; we only add new ones
-            # via a fresh FanIn on detected new running ids (simplified: skip for POC — jobs
-            # present at start are streamed; transitions are rare within a monitor session).
-            _maybe_start_new_streams(fanin, client, state, cur_running)
+                # Read keys during the refresh interval (input is responsive, no separate sleep).
+                if interactive:
+                    key = _read_key(timeout=refresh)
+                    n_displayed = min(len(snap["jobs"]), limit)
+                    if key == "q" or key == "esc":
+                        break
+                    elif key == "j" and n_displayed:
+                        selected = min(selected + 1, n_displayed - 1)
+                    elif key == "k" and n_displayed:
+                        selected = max(selected - 1, 0)
+                    elif key == "s":
+                        pending_ssh = True
+                    elif key == "enter" and n_displayed:
+                        job = snap["jobs"][selected]
+                        drill = ["ssh" if pending_ssh else "logs", job.id]
+                        break
+                else:
+                    time.sleep(refresh)
+
+                # Restart fan-in for newly-running jobs (cheap check each frame)
+                cur_running = {j.id for j in state.jobs if stage_str(j) == "RUNNING"}
+                _maybe_start_new_streams(fanin, client, state, cur_running)
     except KeyboardInterrupt:
         pass
     finally:
+        # GUARANTEED terminal restoration on any exit path (Ctrl-C, drill, or a bug).
+        # No return/exec here — that would mask exceptions (SyntaxWarning) and is fragile.
         stop.set()
         fanin.stop()
-        # Leave alternate screen (restores the normal screen + scrollback) + show cursor
         sys.stdout.write(f"\x1b[?25h{ALT_SCREEN_OFF}")
         sys.stdout.flush()
-        print(f"{DIM}jobsx: stopped{RESET}")
+
+    # Terminal is now fully clean (alt screen off, cbreak off). Handle drill if requested.
+    if drill:
+        # exec replaces this process so native logs -f / ssh stream interactively.
+        _drill(drill[0], drill[1], client=client)
+        return  # exec succeeded; not reached
+    print(f"{DIM}jobsx: stopped{RESET}")
+
+
+def _drill(action: str, job_id: str, *, client: JobsClient) -> None:
+    """Exec into native `hf jobs <action> <id>`. Reuses the CLI's exec helper."""
+    import shutil as _shutil
+
+    ns = getattr(client, "namespace", None)
+    argv = ["hf", "jobs", action, job_id]
+    if ns:
+        argv += ["--namespace", ns]
+    if action == "logs":
+        argv.append("-f")
+    hf = _shutil.which("hf")
+    try:
+        if hf:
+            os.execvp(hf, argv)
+        else:
+            os.execvp(sys.executable, [sys.executable, "-m", "huggingface_hub.cli.hf", *argv[1:]])
+    except FileNotFoundError as e:
+        print(f"{RED}jobsx: could not exec native hf: {e}{RESET}", file=sys.stderr)
 
 
 _started: set[str] = set()

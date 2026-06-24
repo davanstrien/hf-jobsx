@@ -206,9 +206,17 @@ def top(
         float, typer.Option("--refresh", help="Frame interval seconds (default 0.75).")
     ] = 0.75,
     limit: Annotated[int, typer.Option("--limit", help="Max jobs to display (default 12).")] = 12,
+    all_jobs: Annotated[
+        bool, typer.Option("--all", help="Show all jobs, not just running (default: running only).")
+    ] = False,
     token: Annotated[str | None, typer.Option("--token", "-t")] = None,
 ) -> None:
-    """Dense live monitor: sparklines + inline tail-log + @N indexes. (Phase 3) ⭐"""
+    """Dense live monitor: sparklines + inline tail-log + @N indexes. (Phase 3) ⭐
+
+    By default shows only RUNNING jobs (a monitor is for active work). Pass --all to
+    include scheduling/error/completed jobs too. Press j/k to move, Enter for logs,
+    s for ssh, q to quit.
+    """
     from hf_jobsx.fake import fake_client, is_fake_enabled
     from hf_jobsx.render import run_top
 
@@ -216,4 +224,4 @@ def top(
         client = fake_client(token=token, namespace=namespace)
     else:
         client = get_client(namespace=namespace, token=token)
-    run_top(client=client, refresh=refresh, limit=limit)
+    run_top(client=client, refresh=refresh, limit=limit, running_only=not all_jobs)
