@@ -85,7 +85,26 @@ def flavor_str(job: JobInfo) -> str:
 
 
 def display_name(job: JobInfo) -> str:
-    """Human label for a job: docker image, else space, else id."""
+    """Image (or space, or id) — the WHAT (which image ran). For the image column."""
+    return job.docker_image or job.space_id or job.id
+
+
+# Label keys that conventionally mean "the name of this run", in priority order.
+# Checked case-insensitively against job.labels.
+_NAME_LABEL_KEYS = ("name", "job", "job_name", "jobname", "run", "run_name", "exp", "experiment")
+
+
+def job_name(job: JobInfo) -> str:
+    """A human identity for a job: prefer a 'name'-like label, fall back to image.
+
+    The image alone can't distinguish two runs of the same image (both 'train:latest'),
+    but a label like exp=baseline can. Falls back through name-keys → image → space → id.
+    """
+    labels = job.labels or {}
+    lowered = {k.lower(): v for k, v in labels.items()}
+    for key in _NAME_LABEL_KEYS:
+        if key in lowered and lowered[key]:
+            return lowered[key]
     return job.docker_image or job.space_id or job.id
 
 

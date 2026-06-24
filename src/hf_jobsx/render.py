@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from hf_jobsx.metrics import MetricsFanIn, MonitorState, accrued_cost, to_sparkline
-from hf_jobsx.selectors import display_name, fmt_duration, stage_str
+from hf_jobsx.selectors import fmt_duration, job_name, stage_str
 
 if TYPE_CHECKING:
     from hf_jobsx.jobs_client import JobsClient
@@ -235,7 +235,7 @@ def render_lines(
 
     for i, job in enumerate(jobs):
         jid = job.id[:8]
-        name = _truncate(display_name(job), 16)
+        name = _truncate(job_name(job), 16)
         stage = stage_str(job)
         glyph = STAGE_GLYPH.get(stage, DIM + "·" + RESET)
         run = fmt_duration(job)
