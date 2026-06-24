@@ -1,10 +1,12 @@
 """`top` dense live monitor. (SPEC §3 render.py) ⭐ the social artifact
 
-Tufte discipline: max data-ink, no borders/chrome/alt-screen. One rule line top
-and bottom. Direct labels. Word-sized history (sparklines).
+Tufte discipline: max data-ink, no borders/chrome. One rule line top and bottom.
+Direct labels. Word-sized history (sparklines).
 
-Refresh: in-place via ANSI cursor-up + clear-line (mirrors hf jobs stats _clear_line).
-NO alternate screen buffer — preserves scrollback, clean Ctrl-C, no termios raw mode.
+Refresh: alternate screen buffer + clear-and-home every frame, with each line
+hard-fit to terminal width (ANSI-aware) so wrapping is structurally impossible.
+This is the bulletproof pattern (htop/btop/watch): no cursor-up math to get wrong.
+Trade-off: no scrollback (acceptable for a live dashboard). Restored on exit.
 
 Status glyphs (REAL JobStage members, no phantom PENDING):
     ● RUNNING(green) ○ SCHEDULING(yellow) ✕ ERROR(red) ■ CANCELED(dim)
@@ -16,6 +18,7 @@ Sparkline coloring: green normal, yellow sustained >85%, RED when 0% while RUNNI
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import threading
@@ -28,37 +31,58 @@ from hf_jobsx.selectors import display_name, fmt_duration, stage_str
 if TYPE_CHECKING:
     from hf_jobsx.jobs_client import JobsClient
 
-LINE_UP = "\033[1A"
 LINE_CLEAR = "\x1b[2K"
-CR = "\r"
+CLEAR_SCREEN = "\x1b[2J"
+HOME = "\x1b[H"  # cursor to top-left (row 1, col 1)
+ALT_SCREEN_ON = "\x1b[?1049h"
+ALT_SCREEN_OFF = "\x1b[?1049l"
 RULE = "─"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _redraw(lines: list[str], rendered: int) -> int:
-    """Overwrite the previously-rendered block with `lines`, anchored to column 1.
+def _visible_len(s: str) -> int:
+    """Display width of a string, ignoring ANSI color escapes."""
+    return len(_ANSI_RE.sub("", s))
 
-    Relies on autowrap being OFF (each logical line = exactly 1 physical row), so
-    moving the cursor up `rendered` rows always lands on the block's first row.
-    Handles shrinking block sizes by clearing leftover rows. Returns new row count.
+
+def _fit(s: str, width: int) -> str:
+    """Hard-trim a line to exactly `width` display columns (ANSI-aware).
+
+    Guarantees no line can ever exceed terminal width → no autowrap → each logical
+    line is always exactly one physical row. This makes the full-screen redraw safe.
     """
-    buf = []
-    if rendered:
-        buf.append(f"\033[{rendered}A")  # move up to top of previous block
+    # Walk the string accumulating visible columns; stop at width.
+    out: list[str] = []
+    visible = 0
+    i = 0
+    while i < len(s):
+        m = _ANSI_RE.match(s, i)
+        if m:
+            out.append(m.group(0))  # keep escape, costs no display columns
+            i = m.end()
+            continue
+        if visible >= width:
+            break
+        out.append(s[i])
+        visible += 1
+        i += 1
+    return "".join(out)
+
+
+def _redraw(lines: list[str], rendered: int, *, width: int) -> int:
+    """Full-screen in-place redraw: clear screen, home cursor, print each line.
+
+    Robust against line-wrapping (the cause of the 'pushing up' bug): every line is
+    hard-fit to `width` display columns first, so no line can wrap to a 2nd row.
+    No cursor-up counting to get wrong — we always repaint from the top-left.
+    Returns the new row count (= len(lines)).
+    """
     n = len(lines)
+    buf = [CLEAR_SCREEN, HOME]
     for i, line in enumerate(lines):
-        buf.append(CR)
-        buf.append(LINE_CLEAR)
-        buf.append(line)
+        buf.append(_fit(line, width))
         if i < n - 1:
-            buf.append("\n")  # advance to next physical row
-    # Shrank? clear the stale rows left over from the previous (larger) block.
-    if n < rendered:
-        leftover = rendered - n
-        for _ in range(leftover):
-            buf.append("\n")
-            buf.append(CR)
-            buf.append(LINE_CLEAR)
-        buf.append(f"\033[{leftover}A")  # back up to end of new block
+            buf.append("\r\n")
     sys.stdout.write("".join(buf))
     sys.stdout.flush()
     return n
@@ -279,10 +303,9 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
     )
     log_poller.start()
 
-    # Disable autowrap + hide cursor so each logical line is exactly ONE physical row.
-    # Without this, long lines wrap and `rendered` undercounts physical rows, causing the
-    # cursor-up count to be wrong and frames to bleed into each other horizontally.
-    sys.stdout.write("\x1b[?7l\x1b[?25l")
+    # Alternate screen + hide cursor. Bulletproof in-place redraw: every frame is
+    # clear-screen + cursor-home + lines hard-fit to width (no wrapping possible).
+    sys.stdout.write(f"{ALT_SCREEN_ON}\x1b[?25l")
     sys.stdout.flush()
     rendered = 0
     try:
@@ -290,7 +313,7 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
             width = shutil.get_terminal_size().columns
             snap = state.snapshot()
             lines = render_lines(snap, limit=limit, width=width)
-            rendered = _redraw(lines, rendered)
+            rendered = _redraw(lines, rendered, width=width)
             time.sleep(refresh)
 
             # Restart fan-in for newly-running jobs (cheap check each frame)
@@ -304,9 +327,8 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
     finally:
         stop.set()
         fanin.stop()
-        _redraw([], rendered)  # wipe the table block clean
-        # Re-enable autowrap + show cursor
-        sys.stdout.write("\x1b[?7h\x1b[?25h")
+        # Leave alternate screen (restores the normal screen + scrollback) + show cursor
+        sys.stdout.write(f"\x1b[?25h{ALT_SCREEN_OFF}")
         sys.stdout.flush()
         print(f"{DIM}jobsx: stopped{RESET}")
 
