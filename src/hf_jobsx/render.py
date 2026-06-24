@@ -105,8 +105,8 @@ def _read_key(timeout: float = 0.0) -> str | None:
     if ch == "\x1b":  # escape sequence (arrows) — consume the rest non-blocking
         rest = sys.stdin.read(2) if select.select([sys.stdin], [], [], 0)[0] else ""
         return {"\x1b[A": "k", "\x1b[B": "j"}.get(ch + rest, "esc")
-    if ch == "\r":
-        return "enter"
+    if ch in ("\r", "\n"):
+        return "enter"  # cbreak keeps ICRNL on, so Enter arrives as \n, not \r
     return ch.lower()
 
 
@@ -222,6 +222,16 @@ def render_lines(
     show_cost = width >= 96
     show_log = width >= 82
     log_width = max(0, width - (fixed_with_cost if show_cost else fixed_no_log)) if show_log else 0
+
+    # Column header (dim) — labels the sparklines so 'cpu gpu net' aren't ambiguous.
+    # Prefix: marker(1) + '@N'(3) + space(1) = 5 chars, matching each data row.
+    header = f"     {DIM}{'cpu':^8} {'gpu':^8} {'net':^8}  {'id':<10} {'job':<16} st {'run':>5}"
+    if show_cost:
+        header += f" {'cost':>6}"
+    if show_log:
+        header += "  last log"
+    header += RESET
+    lines.append(header)
 
     for i, job in enumerate(jobs):
         jid = job.id[:8]
