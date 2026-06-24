@@ -30,7 +30,39 @@ if TYPE_CHECKING:
 
 LINE_UP = "\033[1A"
 LINE_CLEAR = "\x1b[2K"
+CR = "\r"
 RULE = "─"
+
+
+def _redraw(lines: list[str], rendered: int) -> int:
+    """Overwrite the previously-rendered block with `lines`, anchored to column 1.
+
+    Relies on autowrap being OFF (each logical line = exactly 1 physical row), so
+    moving the cursor up `rendered` rows always lands on the block's first row.
+    Handles shrinking block sizes by clearing leftover rows. Returns new row count.
+    """
+    buf = []
+    if rendered:
+        buf.append(f"\033[{rendered}A")  # move up to top of previous block
+    n = len(lines)
+    for i, line in enumerate(lines):
+        buf.append(CR)
+        buf.append(LINE_CLEAR)
+        buf.append(line)
+        if i < n - 1:
+            buf.append("\n")  # advance to next physical row
+    # Shrank? clear the stale rows left over from the previous (larger) block.
+    if n < rendered:
+        leftover = rendered - n
+        for _ in range(leftover):
+            buf.append("\n")
+            buf.append(CR)
+            buf.append(LINE_CLEAR)
+        buf.append(f"\033[{leftover}A")  # back up to end of new block
+    sys.stdout.write("".join(buf))
+    sys.stdout.flush()
+    return n
+
 
 # ANSI colors (basic 8 — portable, no truecolor needed)
 RED = "\033[31m"
@@ -247,20 +279,18 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
     )
     log_poller.start()
 
+    # Disable autowrap + hide cursor so each logical line is exactly ONE physical row.
+    # Without this, long lines wrap and `rendered` undercounts physical rows, causing the
+    # cursor-up count to be wrong and frames to bleed into each other horizontally.
+    sys.stdout.write("\x1b[?7l\x1b[?25l")
+    sys.stdout.flush()
     rendered = 0
     try:
         while True:
             width = shutil.get_terminal_size().columns
             snap = state.snapshot()
             lines = render_lines(snap, limit=limit, width=width)
-
-            if rendered:
-                for _ in range(rendered):
-                    print(LINE_UP, end=LINE_CLEAR)
-            print("\n".join(lines))
-            sys.stdout.flush()
-            rendered = len(lines)
-
+            rendered = _redraw(lines, rendered)
             time.sleep(refresh)
 
             # Restart fan-in for newly-running jobs (cheap check each frame)
@@ -274,11 +304,10 @@ def run_top(*, client: JobsClient, refresh: float = 0.75, limit: int = 12) -> No
     finally:
         stop.set()
         fanin.stop()
-        # Clear the table, leave a clean line
-        if rendered:
-            for _ in range(rendered):
-                print(LINE_UP, end=LINE_CLEAR)
-            sys.stdout.flush()
+        _redraw([], rendered)  # wipe the table block clean
+        # Re-enable autowrap + show cursor
+        sys.stdout.write("\x1b[?7h\x1b[?25h")
+        sys.stdout.flush()
         print(f"{DIM}jobsx: stopped{RESET}")
 
 
