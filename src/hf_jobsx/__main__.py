@@ -14,7 +14,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Register subcommands (signatures defined in cli.py; bodies are stubs until phases land)
+# Register subcommands (resolve/logs/ssh/cancel/inspect/top are implemented; pick is a stub)
 app.command()(cli.resolve)
 app.command()(cli.logs)
 app.command()(cli.ssh)
