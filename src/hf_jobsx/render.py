@@ -18,7 +18,6 @@ Sparkline coloring: green normal, yellow sustained >85%, RED when 0% while RUNNI
 
 from __future__ import annotations
 
-import os
 import re
 import select
 import shutil
@@ -171,11 +170,12 @@ def _truncate(s: str, width: int) -> str:
 
 
 def _cost_str(cost: float | None) -> str:
+    # ~ prefix signals this is an ESTIMATE (running_secs × unit price), not billing.
     if cost is None:
         return "—"
     if cost < 0.01:
-        return f"$0.0{int(cost * 100)}"  # sub-cent: $0.00 style, not milli-dollars
-    return f"${cost:.2f}"
+        return f"~$0.0{int(cost * 100)}"
+    return f"~${cost:.2f}"
 
 
 def _clean_log_line(line: str) -> str:
@@ -227,7 +227,7 @@ def render_lines(
     # Prefix: marker(1) + '@N'(3) + space(1) = 5 chars, matching each data row.
     header = f"     {DIM}{'cpu':^8} {'gpu':^8} {'net':^8}  {'id':<10} {'job':<16} st {'run':>5}"
     if show_cost:
-        header += f" {'cost':>6}"
+        header += f" {'~cost':>6}"
     if show_log:
         header += "  last log"
     header += RESET
@@ -344,7 +344,6 @@ def run_top(
     running_only: hide non-running jobs (a monitor is for active work). --all shows all.
     Keys (when stdin is a TTY): j/k move, Enter → logs, s → ssh (then Enter), q/Esc quit.
     """
-    width = shutil.get_terminal_size().columns
     state = MonitorState()
     stop = threading.Event()
 
@@ -379,13 +378,46 @@ def run_top(
     )
     log_poller.start()
 
-    drill: list[str] | None = None  # ["logs"|"ssh", job_id] set on Enter
+    try:
+        # Outer loop: each iteration is one monitor session. A drill returns here, so
+        # the user navigates BACK to the monitor after viewing logs/ssh (back-nav).
+        while True:
+            drill = _monitor_session(
+                client=client,
+                state=state,
+                fanin=fanin,
+                stop=stop,
+                refresh=refresh,
+                limit=limit,
+                running_only=running_only,
+            )
+            if drill is None:
+                break  # user quit (q/Esc/Ctrl-C)
+            # Terminal already restored by _monitor_session's finally. Run native as a
+            # subprocess so when it exits we regain control and re-enter the monitor.
+            _drill_subprocess(drill[0], drill[1], client=client)
+    finally:
+        stop.set()
+        fanin.stop()
+    print(f"{DIM}jobsx: stopped{RESET}")
+
+
+def _monitor_session(
+    *,
+    client: JobsClient,
+    state: MonitorState,
+    fanin: MetricsFanIn,
+    stop: threading.Event,
+    refresh: float,
+    limit: int,
+    running_only: bool,
+) -> list[str] | None:
+    """One alt-screen monitor session. Returns ['logs'|'ssh', job_id] on drill, None on quit."""
     selected = 0
     pending_ssh = False
     rendered = 0
     interactive = False
 
-    # Alternate screen + hide cursor.
     sys.stdout.write(f"{ALT_SCREEN_ON}\x1b[?25l")
     sys.stdout.flush()
     try:
@@ -393,7 +425,6 @@ def run_top(
             while True:
                 width = shutil.get_terminal_size().columns
                 snap = state.snapshot()
-                # Apply running-only filter to the displayed jobs.
                 if running_only:
                     snap = {**snap, "jobs": [j for j in snap["jobs"] if stage_str(j) == "RUNNING"]}
                 lines = render_lines(
@@ -401,12 +432,11 @@ def run_top(
                 )
                 rendered = _redraw(lines, rendered, width=width)
 
-                # Read keys during the refresh interval (input is responsive, no separate sleep).
                 if interactive:
                     key = _read_key(timeout=refresh)
                     n_displayed = min(len(snap["jobs"]), limit)
-                    if key == "q" or key == "esc":
-                        break
+                    if key in ("q", "esc"):
+                        return None
                     elif key == "j" and n_displayed:
                         selected = min(selected + 1, n_displayed - 1)
                     elif key == "k" and n_displayed:
@@ -415,50 +445,41 @@ def run_top(
                         pending_ssh = True
                     elif key == "enter" and n_displayed:
                         job = snap["jobs"][selected]
-                        drill = ["ssh" if pending_ssh else "logs", job.id]
-                        break
+                        return ["ssh" if pending_ssh else "logs", job.id]
                 else:
                     time.sleep(refresh)
 
-                # Restart fan-in for newly-running jobs (cheap check each frame)
                 cur_running = {j.id for j in state.jobs if stage_str(j) == "RUNNING"}
                 _maybe_start_new_streams(fanin, client, state, cur_running)
     except KeyboardInterrupt:
-        pass
+        return None  # Ctrl-C quits the monitor
     finally:
-        # GUARANTEED terminal restoration on any exit path (Ctrl-C, drill, or a bug).
-        # No return/exec here — that would mask exceptions (SyntaxWarning) and is fragile.
-        stop.set()
-        fanin.stop()
+        # GUARANTEED terminal restoration before a drill subprocess takes over the tty.
         sys.stdout.write(f"\x1b[?25h{ALT_SCREEN_OFF}")
         sys.stdout.flush()
 
-    # Terminal is now fully clean (alt screen off, cbreak off). Handle drill if requested.
-    if drill:
-        # exec replaces this process so native logs -f / ssh stream interactively.
-        _drill(drill[0], drill[1], client=client)
-        return  # exec succeeded; not reached
-    print(f"{DIM}jobsx: stopped{RESET}")
 
+def _drill_subprocess(action: str, job_id: str, *, client: JobsClient) -> None:
+    """Run native `hf jobs <action> <id>` as a subprocess.
 
-def _drill(action: str, job_id: str, *, client: JobsClient) -> None:
-    """Exec into native `hf jobs <action> <id>`. Reuses the CLI's exec helper."""
-    import shutil as _shutil
+    Returns when the child exits (Ctrl-C on the logs, or the stream ends), so the
+    monitor resumes. Swallows the parent's SIGINT that Ctrl-C also delivers to us —
+    that ended the child, not a request to quit jobsx.
+    """
+    import subprocess
 
     ns = getattr(client, "namespace", None)
-    argv = ["hf", "jobs", action, job_id]
+    argv = ["jobs", action, job_id]
     if ns:
         argv += ["--namespace", ns]
     if action == "logs":
         argv.append("-f")
-    hf = _shutil.which("hf")
+    hf = shutil.which("hf")
+    cmd = [hf] if hf else [sys.executable, "-m", "huggingface_hub.cli.hf"]
     try:
-        if hf:
-            os.execvp(hf, argv)
-        else:
-            os.execvp(sys.executable, [sys.executable, "-m", "huggingface_hub.cli.hf", *argv[1:]])
-    except FileNotFoundError as e:
-        print(f"{RED}jobsx: could not exec native hf: {e}{RESET}", file=sys.stderr)
+        subprocess.run([*cmd, *argv])
+    except KeyboardInterrupt:
+        pass  # child got Ctrl-C; we resume the monitor, not quit
 
 
 _started: set[str] = set()
