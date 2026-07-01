@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.10"
 
 [options]
-exclude-newer = "2026-06-22T11:30:50.092403Z"
+exclude-newer = "2026-06-29T13:51:21.861446Z"
 exclude-newer-span = "P2D"
 
 [[package]]
@@ -104,6 +104,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.dev-dependencies]
@@ -113,7 +114,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "huggingface-hub", specifier = ">=0.25.0" }]
+requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.25.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

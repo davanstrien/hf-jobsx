@@ -36,11 +36,12 @@ src/hf_jobsx/
   jobs_client.py # thin wrapper around huggingface_hub public API. LAZY namespace.
   metrics.py     # PURE core (parse_sample, sparkline, accrued_cost) + MetricsFanIn/MonitorState
   render.py      # top: render_lines + _redraw + _monitor_session + _drill_subprocess (the hairy bit)
+  runspec.py     # PURE: parse [tool.hf-jobs] PEP 723 header -> native `hf jobs uv run` flags (for `run`)
   pick.py        # STUB
   fake.py        # HF_JOBSX_FAKE=1 client (deterministic jobs + metrics sim)
 ```
 
-**Design stance — dumb pipe, smart edges:** jobsx owns *selection + the monitor*. It **delegates depth to native** (`logs`/`ssh`/`cancel`/`inspect` resolve a selector, then `os.execvp`/subprocess into real `hf jobs`). Do not reimplement listing/running/SSH/log-rendering.
+**Design stance — dumb pipe, smart edges:** jobsx owns *selection + the monitor* (and, for `run`, *reading the header*). It **delegates depth to native** (`logs`/`ssh`/`cancel`/`inspect` resolve a selector, then `os.execvp`/subprocess into real `hf jobs`; `run` resolves the header, then `os.execvp` into `hf jobs uv run`). Do not reimplement listing/running/SSH/log-rendering.
 
 **Streaming done right:** `top` consumes `fetch_job_metrics()` as an SSE stream into per-job ring buffers — not the refetch-whole-buffer-every-2s hack that sank the predecessor project (`jobs-dashboard`). See the module docstring in `metrics.py`.
 

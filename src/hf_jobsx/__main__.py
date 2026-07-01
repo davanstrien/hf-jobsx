@@ -14,7 +14,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Register subcommands (resolve/logs/ssh/cancel/inspect/top are implemented; pick is a stub)
+# Register subcommands (resolve/logs/ssh/cancel/inspect/top/run implemented; pick is a stub)
 app.command()(cli.resolve)
 app.command()(cli.logs)
 app.command()(cli.ssh)
@@ -22,6 +22,8 @@ app.command()(cli.cancel)
 app.command()(cli.inspect)
 app.command()(cli.pick)
 app.command()(cli.top)
+# `run` forwards unknown flags to the script; ignore_unknown_options routes them to script_args.
+app.command(context_settings={"ignore_unknown_options": True})(cli.run)
 
 
 def main() -> None:
