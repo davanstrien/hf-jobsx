@@ -9,7 +9,6 @@
 # image = "vllm/vllm-openai:unlimited-ocr"
 # flavor = "l4x1"
 # python = "/usr/bin/python3"
-# timeout = "2h"
 # env = { PYTHONPATH = "/usr/local/lib/python3.12/dist-packages" }
 # secrets = ["HF_TOKEN"]
 # ///

@@ -21,10 +21,14 @@ as a `[tool.*]` sub-table — the same, spec-sanctioned mechanism `uv` already u
     # image = "vllm/vllm-openai:unlimited-ocr"
     # flavor = "l4x1"
     # python = "/usr/bin/python3"
-    # timeout = "2h"
     # env = { PYTHONPATH = "/usr/local/lib/python3.12/dist-packages" }
     # secrets = ["HF_TOKEN"]
     # ///
+
+Deliberately excluded: `timeout` (scales with the caller's data + is a spend cap, so not
+script-inherent — pass `--timeout` per run), and run/user-specific params like `namespace`,
+`volumes`, and `labels`. The header carries only *where/whether* a script runs, never *how
+much it spends over time*.
 
 Design: PURE except for `read_script_text` (the one I/O boundary). Everything else is
 string → dict → argv, so it can be unit-tested without a network or a cluster.
@@ -46,14 +50,13 @@ _PEP723_RE = re.compile(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(|
 
 # Keys we translate into native `hf jobs uv run` flags. Everything else in the block
 # is surfaced as a warning rather than silently dropped.
-KNOWN_KEYS = {"image", "flavor", "python", "timeout", "env", "secrets"}
+KNOWN_KEYS = {"image", "flavor", "python", "env", "secrets"}
 
 # Scalar key -> native long flag.
 _SCALAR_FLAGS = (
     ("image", "--image"),
     ("flavor", "--flavor"),
     ("python", "--python"),
-    ("timeout", "--timeout"),
 )
 
 

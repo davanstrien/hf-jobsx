@@ -4,7 +4,6 @@
 #
 # [tool.hf-jobs]
 # flavor = "cpu-basic"
-# timeout = "5m"
 # env = { GREETING = "hello from a [tool.hf-jobs] runtime header" }
 # ///
 """Minimal `hf jobsx run` example — cheap enough to actually launch.

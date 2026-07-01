@@ -44,7 +44,6 @@ def test_run_dry_run_on_bundled_cheap_example():
     cmd = result.stdout.strip()
     assert cmd.startswith("hf jobs uv run")
     assert "--flavor cpu-basic" in cmd
-    assert "--timeout 5m" in cmd
     # env value has spaces -> shlex quotes the whole KEY=VALUE token; assert on the payload
     assert "GREETING=hello from a [tool.hf-jobs] runtime header" in cmd
     # the script + its own args are passed through verbatim
@@ -73,6 +72,14 @@ def test_run_dry_run_override_wins():
     assert result.returncode == 0, result.stderr
     assert "--flavor a100-large" in result.stdout
     assert "l4x1" not in result.stdout
+
+
+def test_run_dry_run_timeout_is_a_per_run_flag():
+    """timeout isn't a header key, but --timeout still passes through to native (per-run)."""
+    example = _EXAMPLES / "hello-jobs.py"
+    result = _run("run", str(example), "--timeout", "90m", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "--timeout 90m" in result.stdout
 
 
 def test_run_dry_run_no_header_passes_through(tmp_path):
