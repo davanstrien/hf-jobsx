@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "hf-jobsx"
 version = "0.1.0"
-description = "Ergonomic HF Jobs CLI extension: jump-picker, selectors, dense live monitor"
+description = "Ergonomic HF Jobs CLI extension: header-driven run, selectors, dense live monitor (top)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
