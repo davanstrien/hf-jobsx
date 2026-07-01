@@ -248,8 +248,9 @@ def run(
     script: Annotated[
         str,
         typer.Argument(
+            # \[ escapes the bracket so Rich renders it literally, not as a markup tag.
             help="UV script to launch: a local .py path or an https URL. Its "
-            "[tool.hf-jobs] header (if any) sets the runtime."
+            r"\[tool.hf-jobs] header (if any) sets the runtime."
         ),
     ],
     script_args: Annotated[
@@ -290,7 +291,7 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Launch a UV script on HF Jobs, applying its `[tool.hf-jobs]` runtime header.
+    r"""Launch a UV script on HF Jobs, applying its `\[tool.hf-jobs]` runtime header.
 
     Some recipes must run on a specific image/interpreter/PYTHONPATH or they fail
     silently (every output row an error sentinel). This reads the runtime block that
