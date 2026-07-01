@@ -7,9 +7,10 @@ It adds ergonomic layers on top of the mature native `hf jobs` surface:
 - **Selectors** — address jobs by position or predicate instead of copying IDs:
   `@latest`, `@0`, `@status=running`, `@label=exp`, `@running`
 - **`top`** — a dense, Tufte-style live monitor: per-job CPU/GPU/net sparklines, status, runtime, estimated cost, and the inline last log line, all in one glance. Drill into a job's logs/ssh with a keypress and navigate back.
+- **`run`** — launch a UV script with its runtime (image, flavor, interpreter, env, secrets) declared once in a `[tool.hf-jobs]` header, so you don't retype the launch flags every time. See [below](#run--launch-a-uv-script-with-its-runtime-baked-into-the-header).
 - **`pick`** — *(coming soon)* interactive jump-picker.
 
-> **Status:** beta. `top`, the selector commands, and back-navigation work. `pick` is a stub. Tested against `huggingface_hub` ≥ 0.25. See [SPEC.md](SPEC.md) for the full design and roadmap.
+> **Status:** beta. `run`, `top`, the selector commands, and back-navigation work. `pick` is a stub. Tested against `huggingface_hub` ≥ 0.25. See [SPEC.md](SPEC.md) for the full design and roadmap.
 
 ## Demo
 
