@@ -24,6 +24,7 @@ classifiers = [
 # Minimal POC deps. Add `rich` only if the built-in picker needs it.
 dependencies = [
     "huggingface-hub>=0.25.0",
+    "tomli>=2.0; python_version < '3.11'",  # tomllib is stdlib on 3.11+; `run` header parsing
 ]
 
 [project.urls]

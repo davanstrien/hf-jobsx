@@ -89,6 +89,48 @@ Keys: `j`/`k` or arrows to move, `Enter` to follow the selected job's logs, `s` 
 
 What it shows that native `hf jobs stats` doesn't: **per-resource history** (sparklines, not just the current value) and the **inline tail log** — so "GPU flatlined" reads as "GPU flatlined *and the step froze*", and an OOM shows the error inline next to the job.
 
+### `run` — launch a UV script with its runtime baked into the header
+
+Some recipes *must* launch on a specific image/interpreter/`PYTHONPATH`/flavor — because the model's architecture only exists in that pinned build. Today those launch flags live in the script's docstring, so a caller who omits them gets a **silent, corrupt run** (every row an error sentinel) instead of a clear failure:
+
+```bash
+# the incantation you have to know and not fat-finger:
+hf jobs uv run --flavor l4x1 -s HF_TOKEN --image vllm/vllm-openai:unlimited-ocr \
+  --python /usr/bin/python3 -e PYTHONPATH=/usr/local/lib/python3.12/dist-packages \
+  unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
+```
+
+`run` lets those parameters **travel with the script** in a `[tool.hf-jobs]` block in the PEP 723 header — the same spec-sanctioned `[tool.*]` mechanism `uv` already uses for `[tool.uv]`, so `uv run` (and everything else) ignores it:
+
+```python
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["datasets", "huggingface-hub", "pillow", "tqdm", "toolz"]
+#
+# [tool.hf-jobs]
+# image = "vllm/vllm-openai:unlimited-ocr"
+# flavor = "l4x1"
+# python = "/usr/bin/python3"
+# timeout = "2h"
+# env = { PYTHONPATH = "/usr/local/lib/python3.12/dist-packages" }
+# secrets = ["HF_TOKEN"]
+# ///
+```
+
+Then the launch is just:
+
+```bash
+hf jobsx run unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
+```
+
+`run` reads the header, echoes the resolved runtime, and delegates the actual launch to native `hf jobs uv run`. Explicit flags override the header (`--image`, `--flavor`, `-p/--python`, `--timeout`, `-e/--env KEY=VALUE`, `-s/--secrets NAME`); everything after the script is passed through to the script verbatim. Use `--dry-run` to print the resolved command without launching:
+
+```bash
+hf jobsx run unlimited-ocr-vllm.py in out --flavor a100-large --dry-run
+```
+
+> **Scope:** the header only carries what `uv` *can't* see — the submit-time launcher params (image / flavor / interpreter / env / timeout / secret names). Runtime dependency pins stay in `[tool.uv]` where `uv` already handles them. And a header prevents the *human* mistake; it doesn't make a mutable image tag reproducible — pin by digest and add an in-container self-check for that.
+
 ## Demo / develop without compute
 
 `top` ships with a deterministic fake mode (no real jobs needed — useful for screenshots/development):

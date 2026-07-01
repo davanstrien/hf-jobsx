@@ -8,12 +8,14 @@ stdout/stdin, so `logs -f` streaming and `ssh` interactivity work natively).
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from typing import Annotated
 
 import typer
 
+from hf_jobsx import runspec
 from hf_jobsx.jobs_client import get_client
 from hf_jobsx.selectors import (
     SelectorError,
@@ -229,3 +231,113 @@ def top(
     else:
         client = get_client(namespace=namespace, token=token)
     run_top(client=client, refresh=refresh, limit=limit, running_only=not all_jobs)
+
+
+def _parse_env_overrides(items: list[str] | None) -> dict[str, str]:
+    """Parse repeated ``-e KEY=VALUE`` overrides into a dict."""
+    out: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            _die(f"--env expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        out[key] = value
+    return out
+
+
+def run(
+    script: Annotated[
+        str,
+        typer.Argument(
+            help="UV script to launch: a local .py path or an https URL. Its "
+            "[tool.hf-jobs] header (if any) sets the runtime."
+        ),
+    ],
+    script_args: Annotated[
+        list[str] | None,
+        typer.Argument(help="Arguments passed through to the script (unknown flags too)."),
+    ] = None,
+    image: Annotated[
+        str | None, typer.Option("--image", help="Override the Docker image from the header.")
+    ] = None,
+    flavor: Annotated[
+        str | None, typer.Option("--flavor", help="Override the hardware flavor from the header.")
+    ] = None,
+    python: Annotated[
+        str | None,
+        typer.Option("-p", "--python", help="Override the interpreter from the header."),
+    ] = None,
+    timeout: Annotated[
+        str | None, typer.Option("--timeout", help="Override the max duration from the header.")
+    ] = None,
+    env: Annotated[
+        list[str] | None,
+        typer.Option("-e", "--env", help="Add/override an env var KEY=VALUE (repeatable)."),
+    ] = None,
+    secrets: Annotated[
+        list[str] | None,
+        typer.Option("-s", "--secrets", help="Forward a secret NAME to the job (repeatable)."),
+    ] = None,
+    detach: Annotated[
+        bool, typer.Option("-d", "--detach", help="Run in the background and print the job id.")
+    ] = False,
+    namespace: Annotated[str | None, typer.Option("--namespace")] = None,
+    token: Annotated[str | None, typer.Option("--token")] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print the resolved `hf jobs uv run` command and exit; launch nothing.",
+        ),
+    ] = False,
+) -> None:
+    """Launch a UV script on HF Jobs, applying its `[tool.hf-jobs]` runtime header.
+
+    Some recipes must run on a specific image/interpreter/PYTHONPATH or they fail
+    silently (every output row an error sentinel). This reads the runtime block that
+    travels with the script — image, flavor, python, env, timeout, secrets — so you
+    don't have to remember the launch flags. Explicit flags here override the header;
+    the real launch is delegated to native `hf jobs uv run`.
+    """
+    try:
+        header = runspec.parse_runtime(runspec.read_script_text(script))
+    except ValueError as e:
+        _die(str(e))
+    except Exception as e:  # network / permission — surface a clean one-liner
+        _die(f"could not read script {script!r}: {_friendly_error(e)}")
+
+    overrides = {
+        "image": image,
+        "flavor": flavor,
+        "python": python,
+        "timeout": timeout,
+        "env": _parse_env_overrides(env),
+        "secrets": secrets or [],
+    }
+    resolved = runspec.resolve(header, overrides)
+
+    for warning in resolved.warnings:
+        typer.secho(f"jobsx: {warning}", err=True, fg=typer.colors.YELLOW)
+    if resolved.echo:
+        typer.secho("jobsx: resolved runtime (header + overrides):", err=True, fg=typer.colors.CYAN)
+        for line in resolved.echo:
+            typer.echo(f"  {line}", err=True)
+    else:
+        typer.secho(
+            "jobsx: no [tool.hf-jobs] block — passing through to native hf jobs uv run",
+            err=True,
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+
+    argv = ["hf", "jobs", "uv", "run", *resolved.flags]
+    if detach:
+        argv.append("--detach")
+    if namespace:
+        argv += ["--namespace", namespace]
+    if token:
+        argv += ["--token", token]
+    argv += [script, *(script_args or [])]
+
+    if dry_run:
+        typer.echo(shlex.join(argv))
+        raise typer.Exit()
+    _exec_native(argv)
