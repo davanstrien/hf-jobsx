@@ -268,7 +268,13 @@ def run(
         typer.Option("-p", "--python", help="Override the interpreter from the header."),
     ] = None,
     timeout: Annotated[
-        str | None, typer.Option("--timeout", help="Override the max duration from the header.")
+        str | None,
+        typer.Option(
+            "--timeout",
+            # timeout is a per-run cost decision (scales with your data), not a header key.
+            help="Max duration for this run, e.g. 2h, 90m (default 30m). A per-run flag, "
+            "not a header key.",
+        ),
     ] = None,
     env: Annotated[
         list[str] | None,
@@ -295,9 +301,9 @@ def run(
 
     Some recipes must run on a specific image/interpreter/PYTHONPATH or they fail
     silently (every output row an error sentinel). This reads the runtime block that
-    travels with the script — image, flavor, python, env, timeout, secrets — so you
-    don't have to remember the launch flags. Explicit flags here override the header;
-    the real launch is delegated to native `hf jobs uv run`.
+    travels with the script — image, flavor, python, env, secrets — so you don't have
+    to remember the launch flags. Explicit flags here override the header; the real
+    launch is delegated to native `hf jobs uv run`.
     """
     try:
         header = runspec.parse_runtime(runspec.read_script_text(script))
@@ -310,7 +316,6 @@ def run(
         "image": image,
         "flavor": flavor,
         "python": python,
-        "timeout": timeout,
         "env": _parse_env_overrides(env),
         "secrets": secrets or [],
     }
@@ -330,6 +335,9 @@ def run(
         )
 
     argv = ["hf", "jobs", "uv", "run", *resolved.flags]
+    # timeout is a per-run flag, not a header key — pass it straight through to native.
+    if timeout:
+        argv += ["--timeout", timeout]
     if detach:
         argv.append("--detach")
     if namespace:

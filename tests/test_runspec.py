@@ -26,7 +26,6 @@ UNLIMITED_HEADER = '''\
 # image = "vllm/vllm-openai:unlimited-ocr"
 # flavor = "l4x1"
 # python = "/usr/bin/python3"
-# timeout = "2h"
 # env = { PYTHONPATH = "/usr/local/lib/python3.12/dist-packages" }
 # secrets = ["HF_TOKEN"]
 # ///
@@ -62,7 +61,6 @@ def test_parse_runtime_reads_all_fields():
         "image": "vllm/vllm-openai:unlimited-ocr",
         "flavor": "l4x1",
         "python": "/usr/bin/python3",
-        "timeout": "2h",
         "env": {"PYTHONPATH": "/usr/local/lib/python3.12/dist-packages"},
         "secrets": ["HF_TOKEN"],
     }
@@ -78,14 +76,20 @@ def test_resolve_header_only_builds_expected_flags():
         "l4x1",
         "--python",
         "/usr/bin/python3",
-        "--timeout",
-        "2h",
         "--env",
         "PYTHONPATH=/usr/local/lib/python3.12/dist-packages",
         "--secrets",
         "HF_TOKEN",
     ]
     assert not resolved.warnings
+
+
+def test_timeout_in_header_warns_as_unknown_key():
+    # timeout is deliberately NOT a header key (run/data-dependent + a spend cap).
+    # A stray one should surface as an unknown-key warning, not silently emit a flag.
+    resolved = runspec.resolve({"image": "x", "timeout": "2h"}, {"env": {}, "secrets": []})
+    assert resolved.flags == ["--image", "x"]
+    assert any("timeout" in w for w in resolved.warnings)
 
 
 def test_override_beats_header():

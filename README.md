@@ -111,7 +111,6 @@ hf jobs uv run --flavor l4x1 -s HF_TOKEN --image vllm/vllm-openai:unlimited-ocr 
 # image = "vllm/vllm-openai:unlimited-ocr"
 # flavor = "l4x1"
 # python = "/usr/bin/python3"
-# timeout = "2h"
 # env = { PYTHONPATH = "/usr/local/lib/python3.12/dist-packages" }
 # secrets = ["HF_TOKEN"]
 # ///
@@ -123,7 +122,7 @@ Then the launch is just:
 hf jobsx run unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
 ```
 
-`run` reads the header, echoes the resolved runtime, and delegates the actual launch to native `hf jobs uv run`. Explicit flags override the header (`--image`, `--flavor`, `-p/--python`, `--timeout`, `-e/--env KEY=VALUE`, `-s/--secrets NAME`); everything after the script is passed through to the script verbatim. Use `--dry-run` to print the resolved command without launching:
+`run` reads the header, echoes the resolved runtime, and delegates the actual launch to native `hf jobs uv run`. Explicit flags override the header (`--image`, `--flavor`, `-p/--python`, `-e/--env KEY=VALUE`, `-s/--secrets NAME`); everything after the script is passed through to the script verbatim. Use `--dry-run` to print the resolved command without launching:
 
 ```bash
 hf jobsx run unlimited-ocr-vllm.py in out --flavor a100-large --dry-run
@@ -131,7 +130,7 @@ hf jobsx run unlimited-ocr-vllm.py in out --flavor a100-large --dry-run
 
 Runnable examples (a cheap `cpu-basic` one and the vLLM image-mode case) live in [`examples/`](examples/).
 
-> **Scope:** the header only carries what `uv` *can't* see — the submit-time launcher params (image / flavor / interpreter / env / timeout / secret names). Runtime dependency pins stay in `[tool.uv]` where `uv` already handles them. And a header prevents the *human* mistake; it doesn't make a mutable image tag reproducible — pin by digest and add an in-container self-check for that.
+> **Scope:** the header carries only what's *script-inherent* — where/whether the script runs: `image`, `flavor` (a suggested default, like a Space's `suggested_hardware`; overridable), `python`, `env`, `secrets` (names). It deliberately omits **`timeout`** (a per-run cost decision that scales with your data — pass `--timeout`) and run/user-specific params (`namespace`, `volumes`, `labels`). Dependency pins stay in `[tool.uv]`, and image/model-specific knobs ride in `env` rather than growing new keys. A header prevents the *human* mistake; it doesn't make a mutable image tag reproducible — pin by digest + add an in-container self-check for that.
 
 ## Demo / develop without compute
 
