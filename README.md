@@ -129,6 +129,8 @@ hf jobsx run unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
 hf jobsx run unlimited-ocr-vllm.py in out --flavor a100-large --dry-run
 ```
 
+Runnable examples (a cheap `cpu-basic` one and the vLLM image-mode case) live in [`examples/`](examples/).
+
 > **Scope:** the header only carries what `uv` *can't* see — the submit-time launcher params (image / flavor / interpreter / env / timeout / secret names). Runtime dependency pins stay in `[tool.uv]` where `uv` already handles them. And a header prevents the *human* mistake; it doesn't make a mutable image tag reproducible — pin by digest and add an in-container self-check for that.
 
 ## Demo / develop without compute
