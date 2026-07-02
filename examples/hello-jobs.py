@@ -12,7 +12,7 @@ It carries a `[tool.hf-jobs]` block, so `hf jobsx run examples/hello-jobs.py` la
 `cpu-basic` with a `GREETING` env var without you passing any flags. `uv run` and every other
 tool ignore the block (it's a `[tool.*]` table they don't own) — it only affects `hf jobsx run`.
 
-    hf jobsx run examples/hello-jobs.py --dry-run      # print the resolved command, don't launch
+    hf jobsx run --dry-run examples/hello-jobs.py      # print the resolved command, don't launch
     hf jobsx run examples/hello-jobs.py --name Daniel  # actually launch on cpu-basic (cheap)
 """
 

@@ -60,6 +60,13 @@ _SCALAR_FLAGS = (
     ("python", "--python"),
 )
 
+# Native re-parses each --env token with a dotenv grammar whose KEY must match this;
+# anything else is silently dropped or (worse) mis-parsed as a bare key. Reject early.
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Chars load_dotenv's splitlines() breaks on but its escape table can't encode.
+_UNENCODABLE_LINE_SEPS = re.compile("[\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+
 
 @dataclass
 class Resolved:
@@ -138,6 +145,12 @@ def _validate_header(table: dict) -> None:
         if not isinstance(env, dict):
             raise ValueError('`env` must be a table, e.g. env = { PYTHONPATH = "/x" }')
         for k, v in env.items():
+            if not _ENV_KEY_RE.match(k):
+                raise ValueError(
+                    f"[tool.hf-jobs] `env` key {k!r} is not a valid env var name "
+                    "(letters, digits, underscore; can't start with a digit) — native "
+                    "hf jobs would silently drop or mis-parse it"
+                )
             if not isinstance(v, str):
                 raise ValueError(
                     f'[tool.hf-jobs] `env.{k}` must be a TOML string — quote it, e.g. {k} = "{v}"'
@@ -151,17 +164,20 @@ def _validate_header(table: dict) -> None:
 
 
 def _is_hf_url(url: str) -> bool:
-    """True iff *url*'s hostname exactly matches the configured HF endpoint's hostname.
+    """True iff *url* is https AND its hostname exactly matches the HF endpoint's.
 
     Exact hostname equality, never substring/suffix matching on the raw URL:
     ``evil.com/huggingface.co``, ``nothuggingface.co``, and
-    ``huggingface.co.evil.com`` must all be non-matches.
+    ``huggingface.co.evil.com`` must all be non-matches. Plain ``http://`` is also a
+    non-match even for the right host — a bearer token never goes over cleartext.
     """
     from huggingface_hub import constants
 
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
     endpoint_host = urlparse(constants.ENDPOINT).hostname
-    url_host = urlparse(url).hostname
-    return endpoint_host is not None and url_host is not None and url_host == endpoint_host
+    return endpoint_host is not None and parsed.hostname == endpoint_host
 
 
 def read_script_text(script: str, token: str | None = None) -> str:
@@ -179,7 +195,7 @@ def read_script_text(script: str, token: str | None = None) -> str:
         from huggingface_hub.utils import build_hf_headers, get_session
 
         headers = build_hf_headers(token=token) if _is_hf_url(script) else None
-        response = get_session().get(script, headers=headers)
+        response = get_session().get(script, headers=headers, timeout=10)
         response.raise_for_status()
         return response.text
     path = Path(script)
@@ -199,12 +215,19 @@ def _dotenv_quote(value: str) -> str:
 
     Those sequential replaces cannot represent a literal backslash followed by ``n``
     or ``t`` (the earlier ``\\n``/``\\t`` replace always fires first); raise rather
-    than deliver a silently corrupted value.
+    than deliver a silently corrupted value. Same for the exotic line separators the
+    parser's ``splitlines()`` splits on but its escapes can't encode (``\\r``, ``\\v``,
+    ``\\f``, U+001C–U+001E, U+0085, U+2028, U+2029).
     """
     if re.search(r"\\[nt]", value):
         raise ValueError(
             f"env value {value!r} cannot be passed through native hf jobs: its dotenv "
             "parser mangles a literal backslash followed by 'n' or 't'"
+        )
+    if _UNENCODABLE_LINE_SEPS.search(value):
+        raise ValueError(
+            f"env value {value!r} cannot be passed through native hf jobs: its dotenv "
+            "parser splits on this line-separator character and has no escape for it"
         )
     escaped = (
         value.replace("\\", "\\\\")
