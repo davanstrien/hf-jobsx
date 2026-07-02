@@ -123,10 +123,10 @@ Then the launch is just:
 hf jobsx run unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
 ```
 
-`run` reads the header, echoes the resolved runtime, and delegates the actual launch to native `hf jobs uv run`. Explicit flags override the header (`--image`, `--flavor`, `-p/--python`, `-e/--env KEY=VALUE`, `-s/--secrets NAME`); everything after the script is passed through to the script verbatim. Use `--dry-run` to print the resolved command without launching:
+`run` reads the header, echoes the resolved runtime, and delegates the actual launch to native `hf jobs uv run`. Explicit flags override the header (`--image`, `--flavor`, `-p/--python`, `-e/--env KEY[=VALUE]`, `-s/--secrets NAME`); launch flags go **before** the script (docker-style), and everything after the script is passed through to the script verbatim. Use `--dry-run` to print the resolved command without launching:
 
 ```bash
-hf jobsx run unlimited-ocr-vllm.py in out --flavor a100-large --dry-run
+hf jobsx run --flavor a100-large --dry-run unlimited-ocr-vllm.py in out
 ```
 
 Runnable examples (a cheap `cpu-basic` one and the vLLM image-mode case) live in [`examples/`](examples/).
