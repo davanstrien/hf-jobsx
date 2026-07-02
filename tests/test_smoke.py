@@ -1,5 +1,6 @@
 """Smoke tests for packaging/dispatch. Real behavior tests live in test_selectors/test_metrics."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,12 +11,17 @@ _SUBPROCESS_TIMEOUT = 15
 _EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
-def _run(*args: str, timeout: float = _SUBPROCESS_TIMEOUT) -> subprocess.CompletedProcess:
+def _run(
+    *args: str,
+    timeout: float = _SUBPROCESS_TIMEOUT,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "hf_jobsx", *args],
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
 
 
@@ -39,7 +45,7 @@ def test_run_dry_run_on_bundled_cheap_example():
     Doubles as a drift guard: if examples/hello-jobs.py's header changes, this fails.
     """
     example = _EXAMPLES / "hello-jobs.py"
-    result = _run("run", str(example), "--name", "Daniel", "--dry-run")
+    result = _run("run", "--dry-run", str(example), "--name", "Daniel")
     assert result.returncode == 0, result.stderr
     cmd = result.stdout.strip()
     assert cmd.startswith("hf jobs uv run")
@@ -56,7 +62,7 @@ def test_run_dry_run_on_bundled_cheap_example():
 def test_run_dry_run_on_bundled_image_mode_example():
     """The shipped image-mode example resolves the full launch triple uv can't see."""
     example = _EXAMPLES / "image-mode-vllm.py"
-    result = _run("run", str(example), "in_ds", "out_ds", "--max-samples", "10", "--dry-run")
+    result = _run("run", "--dry-run", str(example), "in_ds", "out_ds", "--max-samples", "10")
     assert result.returncode == 0, result.stderr
     cmd = result.stdout.strip()
     assert "--image vllm/vllm-openai:unlimited-ocr" in cmd
@@ -69,7 +75,7 @@ def test_run_dry_run_on_bundled_image_mode_example():
 def test_run_dry_run_override_wins():
     """An explicit flag beats the header value (image-mode example declares l4x1)."""
     example = _EXAMPLES / "image-mode-vllm.py"
-    result = _run("run", str(example), "--flavor", "a100-large", "--dry-run")
+    result = _run("run", "--flavor", "a100-large", "--dry-run", str(example))
     assert result.returncode == 0, result.stderr
     assert "--flavor a100-large" in result.stdout
     assert "l4x1" not in result.stdout
@@ -78,16 +84,72 @@ def test_run_dry_run_override_wins():
 def test_run_dry_run_timeout_is_a_per_run_flag():
     """timeout isn't a header key, but --timeout still passes through to native (per-run)."""
     example = _EXAMPLES / "hello-jobs.py"
-    result = _run("run", str(example), "--timeout", "90m", "--dry-run")
+    result = _run("run", "--timeout", "90m", "--dry-run", str(example))
     assert result.returncode == 0, result.stderr
     assert "--timeout 90m" in result.stdout
+
+
+def test_run_known_flag_after_script_goes_to_script():
+    """Docker-style boundary: a jobsx-known flag AFTER the script belongs to the script.
+
+    `-d` after the script must ride in the script's argv — the job must NOT detach.
+    (Previously ignore_unknown_options + interspersed parsing hijacked it as --detach.)
+    """
+    example = _EXAMPLES / "hello-jobs.py"
+    result = _run("run", "--dry-run", str(example), "-d")
+    assert result.returncode == 0, result.stderr
+    cmd = result.stdout.strip()
+    assert "--detach" not in cmd
+    # `-d` appears after the script path, i.e. in the script's argv
+    assert cmd.index("-d", cmd.index(str(example))) > cmd.index(str(example))
+
+
+def test_run_jobsx_flag_after_script_passes_verbatim():
+    """`--image foo` after the script goes to the script; the header flavor still applies."""
+    example = _EXAMPLES / "hello-jobs.py"
+    result = _run("run", "--dry-run", str(example), "--image", "foo")
+    assert result.returncode == 0, result.stderr
+    cmd = result.stdout.strip()
+    assert "--flavor cpu-basic" in cmd  # header still applied
+    assert "--image foo" in cmd
+    assert cmd.index("--image foo") > cmd.index(str(example))  # in script args, not launch flags
+
+
+def test_run_unknown_flag_before_script_is_loud():
+    """An unknown flag BEFORE the script is a usage error — never silently bound as
+    the script path (which used to skip the real script's header without a peep)."""
+    example = _EXAMPLES / "hello-jobs.py"
+    result = _run("run", "--with", "numpy", str(example))
+    assert result.returncode != 0
+    assert "--with" in result.stderr
+    assert "no [tool.hf-jobs] block" not in result.stderr
+    assert "no [tool.hf-jobs] block" not in result.stdout
+
+
+def test_run_bare_env_resolves_from_environment():
+    """`-e KEY` (no value) copies the value from the caller's environment, like native."""
+    example = _EXAMPLES / "hello-jobs.py"
+    env = {**os.environ, "JOBSX_SMOKE_VAR": "hunter2"}
+    result = _run("run", "-e", "JOBSX_SMOKE_VAR", "--dry-run", str(example), env=env)
+    assert result.returncode == 0, result.stderr
+    assert 'JOBSX_SMOKE_VAR="hunter2"' in result.stdout
+
+
+def test_run_bare_env_unset_warns_and_skips():
+    """`-e KEY` with KEY unset warns on stderr and skips the flag — exit 0, no death."""
+    example = _EXAMPLES / "hello-jobs.py"
+    env = {k: v for k, v in os.environ.items() if k != "JOBSX_SMOKE_UNSET_VAR"}
+    result = _run("run", "-e", "JOBSX_SMOKE_UNSET_VAR", "--dry-run", str(example), env=env)
+    assert result.returncode == 0, result.stderr
+    assert "JOBSX_SMOKE_UNSET_VAR" not in result.stdout
+    assert "not set in your environment" in result.stderr
 
 
 def test_run_dry_run_no_header_passes_through(tmp_path):
     """A script with no [tool.hf-jobs] block still launches — just no injected flags."""
     script = tmp_path / "plain.py"
     script.write_text("# /// script\n# dependencies = []\n# ///\nprint('hi')\n")
-    result = _run("run", str(script), "--dry-run")
+    result = _run("run", "--dry-run", str(script))
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().startswith("hf jobs uv run")
     assert "no [tool.hf-jobs] block" in result.stderr
@@ -97,7 +159,7 @@ def test_run_bad_header_env_exits_clean(tmp_path):
     """A wrong-typed header value dies with a one-line `jobsx:` error — never a traceback."""
     script = tmp_path / "bad.py"
     script.write_text('# /// script\n# [tool.hf-jobs]\n# env = "PYTHONPATH=/x"\n# ///\n')
-    result = _run("run", str(script), "--dry-run")
+    result = _run("run", "--dry-run", str(script))
     assert result.returncode != 0
     assert "jobsx:" in result.stderr
     assert "`env` must be a table" in result.stderr
@@ -108,7 +170,7 @@ def test_run_non_table_tool_exits_clean(tmp_path):
     """A scalar `tool` key gets the real error, not the generic 'could not read script'."""
     script = tmp_path / "scalar-tool.py"
     script.write_text('# /// script\n# tool = "x"\n# ///\n')
-    result = _run("run", str(script), "--dry-run")
+    result = _run("run", "--dry-run", str(script))
     assert result.returncode != 0
     assert "must be a table" in result.stderr
     assert "could not read script" not in result.stderr

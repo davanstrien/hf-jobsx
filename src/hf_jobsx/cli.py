@@ -234,13 +234,28 @@ def top(
 
 
 def _parse_env_overrides(items: list[str] | None) -> dict[str, str]:
-    """Parse repeated ``-e KEY=VALUE`` overrides into a dict."""
+    """Parse repeated ``-e`` overrides into a dict: ``KEY=VALUE``, or bare ``KEY``.
+
+    Bare ``-e KEY`` matches native ``hf jobs uv run`` semantics (its dotenv parser
+    resolves the value from the caller's environment): look it up in ``os.environ``;
+    if unset, warn and skip rather than die — native silently drops it, we at least
+    say so.
+    """
     out: dict[str, str] = {}
     for item in items or []:
-        if "=" not in item:
-            _die(f"--env expects KEY=VALUE, got {item!r}")
-        key, value = item.split("=", 1)
-        out[key] = value
+        if "=" in item:
+            key, value = item.split("=", 1)
+            out[key] = value
+            continue
+        value = os.environ.get(item)
+        if value is None:
+            typer.secho(
+                f"jobsx: -e {item}: not set in your environment, skipping",
+                err=True,
+                fg=typer.colors.YELLOW,
+            )
+            continue
+        out[item] = value
     return out
 
 
@@ -255,7 +270,9 @@ def run(
     ],
     script_args: Annotated[
         list[str] | None,
-        typer.Argument(help="Arguments passed through to the script (unknown flags too)."),
+        typer.Argument(
+            help="Everything after the script — flags included — is passed to it verbatim."
+        ),
     ] = None,
     image: Annotated[
         str | None, typer.Option("--image", help="Override the Docker image from the header.")
@@ -278,7 +295,12 @@ def run(
     ] = None,
     env: Annotated[
         list[str] | None,
-        typer.Option("-e", "--env", help="Add/override an env var KEY=VALUE (repeatable)."),
+        typer.Option(
+            "-e",
+            "--env",
+            help="Add/override an env var: KEY=VALUE, or bare KEY to copy the value "
+            "from your environment (repeatable).",
+        ),
     ] = None,
     secrets: Annotated[
         list[str] | None,
@@ -304,6 +326,9 @@ def run(
     travels with the script — image, flavor, python, env, secrets — so you don't have
     to remember the launch flags. Explicit flags here override the header; the real
     launch is delegated to native `hf jobs uv run`.
+
+    Launch flags go BEFORE the script (docker-style): the first positional token is
+    the script, and everything after it is passed to the script verbatim.
     """
     try:
         header = runspec.parse_runtime(runspec.read_script_text(script, token=token))

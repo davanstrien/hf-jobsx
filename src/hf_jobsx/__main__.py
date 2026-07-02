@@ -22,8 +22,12 @@ app.command()(cli.cancel)
 app.command()(cli.inspect)
 app.command()(cli.pick)
 app.command()(cli.top)
-# `run` forwards unknown flags to the script; ignore_unknown_options routes them to script_args.
-app.command(context_settings={"ignore_unknown_options": True})(cli.run)
+# `run` has a docker-style boundary: launch flags go BEFORE the script; the first
+# positional token is the script, and everything after it — known or unknown, flag or
+# not — passes to the script verbatim (allow_interspersed_args=False stops option
+# parsing at the first positional). Unknown flags before the script are a loud
+# usage error, never silently bound as the script path.
+app.command(context_settings={"allow_interspersed_args": False})(cli.run)
 
 
 def main() -> None:

@@ -11,15 +11,16 @@ it only affects `hf jobsx run` (see the [`run` section](../README.md#run--launch
 
 ```bash
 # print the resolved `hf jobs uv run` command without launching anything
-hf jobsx run examples/hello-jobs.py --dry-run
-hf jobsx run examples/image-mode-vllm.py in_ds out_ds --max-samples 10 --dry-run
+# (launch flags like --dry-run go BEFORE the script; everything after it goes to the script)
+hf jobsx run --dry-run examples/hello-jobs.py
+hf jobsx run --dry-run examples/image-mode-vllm.py in_ds out_ds --max-samples 10
 
-# actually launch the cheap one on cpu-basic
+# actually launch the cheap one on cpu-basic (--name goes to the script)
 hf jobsx run examples/hello-jobs.py --name Daniel
 ```
 
 Running from a checkout (before installing as an extension):
 
 ```bash
-uv run hf-jobsx run examples/hello-jobs.py --dry-run
+uv run hf-jobsx run --dry-run examples/hello-jobs.py
 ```
