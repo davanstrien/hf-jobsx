@@ -9,4 +9,5 @@ build/
 .ruff_cache/
 .pytest_cache/
 .DS_Store
-hf-jobsx local scratch — untracked
+# hf-jobsx local scratch
+LOCAL-TEST.sh
