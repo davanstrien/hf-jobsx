@@ -44,8 +44,9 @@ def test_run_dry_run_on_bundled_cheap_example():
     cmd = result.stdout.strip()
     assert cmd.startswith("hf jobs uv run")
     assert "--flavor cpu-basic" in cmd
-    # env value has spaces -> shlex quotes the whole KEY=VALUE token; assert on the payload
-    assert "GREETING=hello from a [tool.hf-jobs] runtime header" in cmd
+    # env values are emitted dotenv-double-quoted (native re-parses them; unquoted `#`
+    # would start a comment); shlex then quotes the whole token. Assert on the payload.
+    assert 'GREETING="hello from a [tool.hf-jobs] runtime header"' in cmd
     # the script + its own args are passed through verbatim
     assert str(example) in cmd
     assert "--name Daniel" in cmd
@@ -60,7 +61,7 @@ def test_run_dry_run_on_bundled_image_mode_example():
     cmd = result.stdout.strip()
     assert "--image vllm/vllm-openai:unlimited-ocr" in cmd
     assert "--python /usr/bin/python3" in cmd
-    assert "--env PYTHONPATH=/usr/local/lib/python3.12/dist-packages" in cmd
+    assert 'PYTHONPATH="/usr/local/lib/python3.12/dist-packages"' in cmd
     assert "--secrets HF_TOKEN" in cmd
     assert "in_ds out_ds --max-samples 10" in cmd
 
@@ -90,6 +91,28 @@ def test_run_dry_run_no_header_passes_through(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().startswith("hf jobs uv run")
     assert "no [tool.hf-jobs] block" in result.stderr
+
+
+def test_run_bad_header_env_exits_clean(tmp_path):
+    """A wrong-typed header value dies with a one-line `jobsx:` error — never a traceback."""
+    script = tmp_path / "bad.py"
+    script.write_text('# /// script\n# [tool.hf-jobs]\n# env = "PYTHONPATH=/x"\n# ///\n')
+    result = _run("run", str(script), "--dry-run")
+    assert result.returncode != 0
+    assert "jobsx:" in result.stderr
+    assert "`env` must be a table" in result.stderr
+    assert "Traceback" not in result.stderr and "Traceback" not in result.stdout
+
+
+def test_run_non_table_tool_exits_clean(tmp_path):
+    """A scalar `tool` key gets the real error, not the generic 'could not read script'."""
+    script = tmp_path / "scalar-tool.py"
+    script.write_text('# /// script\n# tool = "x"\n# ///\n')
+    result = _run("run", str(script), "--dry-run")
+    assert result.returncode != 0
+    assert "must be a table" in result.stderr
+    assert "could not read script" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_pick_is_honest_stub():

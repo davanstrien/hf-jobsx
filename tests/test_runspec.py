@@ -77,7 +77,7 @@ def test_resolve_header_only_builds_expected_flags():
         "--python",
         "/usr/bin/python3",
         "--env",
-        "PYTHONPATH=/usr/local/lib/python3.12/dist-packages",
+        'PYTHONPATH="/usr/local/lib/python3.12/dist-packages"',
         "--secrets",
         "HF_TOKEN",
     ]
@@ -108,10 +108,10 @@ def test_env_merges_and_override_key_wins():
         header, {"env": {"PYTHONPATH": "/override", "EXTRA": "2"}, "secrets": []}
     )
     env_flags = [resolved.flags[i + 1] for i, f in enumerate(resolved.flags) if f == "--env"]
-    assert "PYTHONPATH=/override" in env_flags  # override wins
-    assert "KEEP=1" in env_flags  # header-only survives
-    assert "EXTRA=2" in env_flags  # override-only added
-    assert "PYTHONPATH=/img/site-packages" not in env_flags
+    assert 'PYTHONPATH="/override"' in env_flags  # override wins
+    assert 'KEEP="1"' in env_flags  # header-only survives
+    assert 'EXTRA="2"' in env_flags  # override-only added
+    assert not any(v.endswith('"/img/site-packages"') for v in env_flags)
 
 
 def test_secrets_union_dedupes_preserving_order():
@@ -147,3 +147,171 @@ def test_malformed_toml_raises_valueerror():
 def test_bad_env_type_raises():
     with pytest.raises(ValueError, match="`env` must be a table"):
         runspec.resolve({"env": "PYTHONPATH=/x"}, {"env": {}, "secrets": []})
+
+
+# --------------------------------------------------------------------------- #
+# CRLF line endings (a Windows-authored or HTTP-fetched script must still parse)
+# --------------------------------------------------------------------------- #
+
+
+def test_crlf_header_is_parsed():
+    crlf = '# /// script\r\n# [tool.hf-jobs]\r\n# flavor = "l4x1"\r\n# ///\r\n'
+    assert runspec.parse_runtime(crlf) == {"flavor": "l4x1"}
+
+
+# --------------------------------------------------------------------------- #
+# non-table / wrong-typed header shapes -> clean ValueError, never AttributeError
+# --------------------------------------------------------------------------- #
+
+
+def _header(body: str) -> str:
+    lines = "".join(f"# {line}\n" for line in body.splitlines())
+    return f"# /// script\n{lines}# ///\n"
+
+
+def test_hfjobs_not_a_table_raises():
+    with pytest.raises(ValueError, match="must be a table"):
+        runspec.parse_runtime(_header('[tool]\nhf-jobs = "oops"'))
+
+
+def test_tool_not_a_table_raises():
+    with pytest.raises(ValueError, match="`tool` must be a table"):
+        runspec.parse_runtime(_header('tool = "x"'))
+
+
+def test_env_not_a_table_raises_at_parse_time():
+    # Validation must happen in parse_runtime (guarded by cli.run), not leak from
+    # resolve() as a raw traceback.
+    with pytest.raises(ValueError, match="`env` must be a table"):
+        runspec.parse_runtime(_header('[tool.hf-jobs]\nenv = "PYTHONPATH=/x"'))
+
+
+def test_non_string_scalar_raises_with_quote_hint():
+    with pytest.raises(ValueError, match="`flavor` must be a TOML string"):
+        runspec.parse_runtime(_header("[tool.hf-jobs]\nflavor = 4"))
+
+
+def test_non_string_env_value_raises_with_quote_hint():
+    # env = { DEBUG = true } must NOT silently become --env DEBUG=True.
+    with pytest.raises(ValueError, match="`env.DEBUG` must be a TOML string"):
+        runspec.parse_runtime(_header("[tool.hf-jobs]\nenv = { DEBUG = true }"))
+
+
+def test_non_string_secrets_item_raises():
+    with pytest.raises(ValueError, match="`secrets` must be a name or list of names"):
+        runspec.parse_runtime(_header('[tool.hf-jobs]\nsecrets = ["HF_TOKEN", 3]'))
+
+
+# --------------------------------------------------------------------------- #
+# env value quoting: round-trip through the ACTUAL native parser
+# --------------------------------------------------------------------------- #
+
+# Native `hf jobs uv run` re-parses each --env token with huggingface_hub's dotenv
+# grammar, whose unquoted form treats `#` as a comment start. These tests import the
+# real installed parser (test-only; runtime code never touches these private modules)
+# so any upstream grammar change breaks loudly here.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a#b",
+        'he said "hi"',
+        "with spaces  and  runs",
+        "back\\slash",
+        "trailing\\",
+        "double\\\\backslash",
+        "KEY=VALUE=more",
+        "dollar$sign",
+        "\\$escaped-dollar",
+        'mix # "q" = $x \\ end',
+        "",
+        "embedded\nnewline",
+    ],
+)
+def test_env_quoting_round_trips_through_native_parser(value):
+    from huggingface_hub.cli._cli_utils import parse_env_map
+    from huggingface_hub.utils._dotenv import load_dotenv
+
+    resolved = runspec.resolve({}, {"env": {"K": value}, "secrets": []})
+    assert resolved.flags[0] == "--env"
+    token = resolved.flags[1]
+    assert load_dotenv(token) == {"K": value}
+    assert parse_env_map([token]) == {"K": value}
+
+
+def test_env_hash_value_regression():
+    # The original bug: unquoted `--env QUERY=a#b` arrived at the job as QUERY=a.
+    resolved = runspec.resolve({"env": {"QUERY": "a#b"}}, {"env": {}, "secrets": []})
+    assert resolved.flags == ["--env", 'QUERY="a#b"']
+
+
+def test_env_value_native_cannot_represent_raises():
+    # load_dotenv unescapes with sequential replaces, so a literal backslash before
+    # 'n'/'t' is unrepresentable — refuse rather than deliver a corrupted value.
+    with pytest.raises(ValueError, match="cannot be passed through native"):
+        runspec.resolve({}, {"env": {"P": "C:\\temp"}, "secrets": []})
+
+
+# --------------------------------------------------------------------------- #
+# auth-header scoping: bearer token only for the configured HF endpoint host
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def hf_endpoint(monkeypatch):
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "ENDPOINT", "https://huggingface.co")
+
+
+def test_is_hf_url_matches_endpoint_host(hf_endpoint):
+    assert runspec._is_hf_url("https://huggingface.co/datasets/u/d/raw/main/s.py")
+    assert runspec._is_hf_url("https://huggingface.co:443/x.py")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.com/huggingface.co",  # host is evil.com; path must not match
+        "https://nothuggingface.co/x.py",  # suffix lookalike
+        "https://huggingface.co.evil.com/x.py",  # prefix lookalike
+        "https://sub.huggingface.co/x.py",  # exact host match only
+        "https://gist.githubusercontent.com/u/raw/s.py",
+    ],
+)
+def test_is_hf_url_rejects_non_endpoint_hosts(url, hf_endpoint):
+    assert not runspec._is_hf_url(url)
+
+
+class _FakeResponse:
+    text = "SCRIPT"
+
+    def raise_for_status(self):
+        pass
+
+
+class _FakeSession:
+    def __init__(self):
+        self.calls: list[tuple[str, dict | None]] = []
+
+    def get(self, url, headers=None):
+        self.calls.append((url, headers))
+        return _FakeResponse()
+
+
+def test_read_script_text_scopes_auth_and_honors_token(monkeypatch, hf_endpoint):
+    """Bearer token goes ONLY to the HF endpoint host; --token overrides ambient creds."""
+    import huggingface_hub.utils as hub_utils
+
+    session = _FakeSession()
+    monkeypatch.setattr(hub_utils, "get_session", lambda: session)
+
+    text = runspec.read_script_text("https://huggingface.co/u/d/raw/main/s.py", token="hf_secret")
+    assert text == "SCRIPT"
+    _, headers = session.calls[0]
+    assert headers["authorization"] == "Bearer hf_secret"
+
+    runspec.read_script_text("https://evil.com/huggingface.co", token="hf_secret")
+    _, headers = session.calls[1]
+    assert headers is None  # no auth (or any HF headers) for arbitrary hosts

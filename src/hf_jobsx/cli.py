@@ -306,7 +306,7 @@ def run(
     launch is delegated to native `hf jobs uv run`.
     """
     try:
-        header = runspec.parse_runtime(runspec.read_script_text(script))
+        header = runspec.parse_runtime(runspec.read_script_text(script, token=token))
     except ValueError as e:
         _die(str(e))
     except Exception as e:  # network / permission — surface a clean one-liner
@@ -319,7 +319,12 @@ def run(
         "env": _parse_env_overrides(env),
         "secrets": secrets or [],
     }
-    resolved = runspec.resolve(header, overrides)
+    try:
+        # Header shapes were validated at parse time; this catches the remainder
+        # (e.g. an --env override value native's dotenv parser can't round-trip).
+        resolved = runspec.resolve(header, overrides)
+    except ValueError as e:
+        _die(str(e))
 
     for warning in resolved.warnings:
         typer.secho(f"jobsx: {warning}", err=True, fg=typer.colors.YELLOW)
