@@ -236,17 +236,28 @@ def top(
 def _parse_env_overrides(items: list[str] | None) -> dict[str, str]:
     """Parse repeated ``-e`` overrides into a dict: ``KEY=VALUE``, or bare ``KEY``.
 
-    Bare ``-e KEY`` matches native ``hf jobs uv run`` semantics (its dotenv parser
-    resolves the value from the caller's environment): look it up in ``os.environ``;
-    if unset, warn and skip rather than die — native silently drops it, we at least
-    say so.
+    Bare ``-e KEY`` mirrors native ``hf jobs uv run``: the value comes from the
+    caller's environment. (Close but not identical: we check ``os.environ`` only,
+    not the stored HF login, and if unset we warn and skip — native drops it
+    silently.) Key names must satisfy native's dotenv grammar or the job would
+    silently mis-parse them; reject those loudly here.
     """
     out: dict[str, str] = {}
     for item in items or []:
         if "=" in item:
             key, value = item.split("=", 1)
+            if not runspec._ENV_KEY_RE.match(key):
+                _die(
+                    f"-e {item!r}: {key!r} is not a valid env var name "
+                    "(letters, digits, underscore; can't start with a digit)"
+                )
             out[key] = value
             continue
+        if not runspec._ENV_KEY_RE.match(item):
+            _die(
+                f"-e {item!r}: not a valid env var name "
+                "(letters, digits, underscore; can't start with a digit)"
+            )
         value = os.environ.get(item)
         if value is None:
             typer.secho(
