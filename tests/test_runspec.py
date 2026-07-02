@@ -253,6 +253,23 @@ def test_env_value_native_cannot_represent_raises():
         runspec.resolve({}, {"env": {"P": "C:\\temp"}, "secrets": []})
 
 
+@pytest.mark.parametrize("sep", ["\r", "\v", "\f", "\x1c", "\x85", "\u2028"])
+def test_env_value_line_separator_chars_raise(sep):
+    # Native's load_dotenv splits input with str.splitlines(), which breaks on these,
+    # and its escape table can't encode them — a value containing one would arrive
+    # truncated (verified: 'a\rb' round-trips as '"a'). Refuse loudly instead.
+    with pytest.raises(ValueError, match="line-separator"):
+        runspec.resolve({}, {"env": {"K": f"a{sep}b"}, "secrets": []})
+
+
+def test_env_key_invalid_name_raises():
+    # TOML bare keys allow '-', but native's dotenv KEY grammar is [A-Za-z_][A-Za-z0-9_]*;
+    # 'MY-VAR="x"' parses there as bare key 'MY' resolved from the JOB environment —
+    # silent drop at best, ambient-value injection at worst. Reject at parse time.
+    with pytest.raises(ValueError, match="not a valid env var name"):
+        runspec.parse_runtime(_header('[tool.hf-jobs]\nenv = { MY-VAR = "x" }'))
+
+
 # --------------------------------------------------------------------------- #
 # auth-header scoping: bearer token only for the configured HF endpoint host
 # --------------------------------------------------------------------------- #
@@ -278,6 +295,7 @@ def test_is_hf_url_matches_endpoint_host(hf_endpoint):
         "https://huggingface.co.evil.com/x.py",  # prefix lookalike
         "https://sub.huggingface.co/x.py",  # exact host match only
         "https://gist.githubusercontent.com/u/raw/s.py",
+        "http://huggingface.co/x.py",  # right host, plaintext scheme — no token on the wire
     ],
 )
 def test_is_hf_url_rejects_non_endpoint_hosts(url, hf_endpoint):
@@ -295,7 +313,7 @@ class _FakeSession:
     def __init__(self):
         self.calls: list[tuple[str, dict | None]] = []
 
-    def get(self, url, headers=None):
+    def get(self, url, headers=None, timeout=None):
         self.calls.append((url, headers))
         return _FakeResponse()
 

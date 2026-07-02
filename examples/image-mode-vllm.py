@@ -23,8 +23,9 @@ a GPU to run for real, so treat it as a `--dry-run` demo of how the header colla
       --python /usr/bin/python3 -e PYTHONPATH=/usr/local/lib/python3.12/dist-packages \\
       image-mode-vllm.py in_ds out_ds --max-samples 10
 
-    # with the header, the runtime travels with the script:
-    hf jobsx run examples/image-mode-vllm.py in_ds out_ds --max-samples 10 --dry-run
+    # with the header, the runtime travels with the script (--dry-run BEFORE the
+    # script — anything after it goes to the script itself):
+    hf jobsx run --dry-run examples/image-mode-vllm.py in_ds out_ds --max-samples 10
 """
 
 raise SystemExit(
