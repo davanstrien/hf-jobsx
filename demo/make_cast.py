@@ -12,10 +12,10 @@ Then preview:   asciinema play demo/hf-jobsx-demo.cast
 Convert to gif: agg demo/hf-jobsx-demo.cast demo/hf-jobsx-demo.gif --speed 1.0
 Embed in docs:  https://asciinema.org/a/<ID> (after `asciinema upload`)
 """
+
 from __future__ import annotations
 
 import json
-import time
 
 from hf_jobsx.fake import _FAKE_JOB_DEFS, _fake_log, _sim_sample, fake_client
 from hf_jobsx.metrics import MonitorState, parse_sample
@@ -109,11 +109,8 @@ def main() -> None:
     type_line(cast, "$ hf jobsx resolve @me          # jobs, with @N indexes", hold=0.6)
     c = fake_client()
     for i, job in enumerate(c.list_jobs()):
-        show(
-            cast,
-            f"@{i:<3} {job.id[:8]}…  {stage_str(job):<10} {fmt_duration(job):<6} {display_name(job)}",
-            hold=0.12,
-        )
+        line = f"@{i:<3} {job.id[:8]}…  {stage_str(job):<10} {fmt_duration(job):<6}"
+        show(cast, f"{line} {display_name(job)}", hold=0.12)
     cast.at(0.6, "\r\n")
     clear(cast)
 
@@ -135,7 +132,7 @@ def main() -> None:
     for f in range(1, NFRAMES + 1):
         state = build_top_state(f)
         selected = (f // 4) % 4  # cursor walks down over time
-        pending_ssh = (f > NFRAMES // 2)  # halfway, switch the action hint to ssh
+        pending_ssh = f > NFRAMES // 2  # halfway, switch the action hint to ssh
         frame = render_top_frame(state, selected=selected, pending_ssh=pending_ssh)
         cast.at(0.5 if f > 1 else 0.3, frame)
 
