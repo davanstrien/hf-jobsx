@@ -16,9 +16,12 @@ def _run(
     timeout: float = _SUBPROCESS_TIMEOUT,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    # NO_COLOR: Rich colorizes usage errors on CI runners (but not local pipes),
-    # which puts ANSI codes inside the strings assertions grep for. Force plain.
+    # Typer force-enables terminal styling when GITHUB_ACTIONS is set, and NO_COLOR
+    # only strips colors — bold/dim codes still land inside the strings assertions
+    # grep for. Scrub the CI-detection vars so subprocess output is plain everywhere.
     merged_env = {**(env if env is not None else os.environ), "NO_COLOR": "1", "COLUMNS": "120"}
+    for var in ("GITHUB_ACTIONS", "FORCE_COLOR", "CI"):
+        merged_env.pop(var, None)
     return subprocess.run(
         [sys.executable, "-m", "hf_jobsx", *args],
         capture_output=True,
