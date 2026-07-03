@@ -37,9 +37,39 @@ hf jobsx run --timeout 20m unlimited-ocr-vllm.py in_ds out_ds --max-samples 10
 - [x] `uv` itself parses both adapted headers without complaint (resolves the script env;
       warnings seen are vllm-nightly wheel metadata, unrelated).
 - [x] Real launch: `unlimited-ocr-vllm.py` on `davanstrien/exams-ocr-gpu-test` →
-      `davanstrien/run-header-dogfood-test`, `--max-samples 5 --timeout 20m`, job
-      `6a47821433c08a2c0dae2d63`. RESULT: _pending — fill in on completion._
+      `davanstrien/run-header-dogfood-test`, `--max-samples 5 --timeout 20m`.
+      **COMPLETED** (job `6a4782fefb6818a83db312e0`, 171s, ~$0.04): image booted, CUDA on
+      L4, image interpreter + PYTHONPATH intact, HF_TOKEN forwarded, 5 pages OCR'd,
+      parquet + dataset card pushed. First attempt (`6a478214…`) errored on a *script-level*
+      arg (output column existed → added `--output-column markdown_unlimited`) — the header
+      layer was invisible in that failure, which is the delegation model working.
+      Total spend both attempts: ~$0.07.
 
 ## UX verdict
 
-_To fill after the run + fresh-eyes subagent review._
+**Fresh-eyes subagent review (2026-07-03): adopt, 7.5/10** — "the header + provenance
+echo is categorically better than docstring incantations"; both real-recipe dry-runs
+reproduced the docstring commands exactly with zero flags remembered. The resolved-runtime
+echo with `(header)`/`(override)` provenance tags called out as the best part of the tool.
+
+**Top friction (ranked; #1 is blocks-adoption tier):**
+1. **Unknown header keys warn-and-proceed, exit 0** — and then print the contradictory
+   "no [tool.hf-jobs] block" line. A typo'd `flavour`/`hardware`/`secret` silently
+   launches on default runtime while the user believes the header protected them —
+   the exact silent-wrong-runtime failure the feature exists to prevent. Fix: hard-error
+   on unknown keys with did-you-mean + valid-key list (special-case `timeout` → "pass
+   --timeout"); never print "no block" when a block exists.
+2. Missing/typo'd script path reports "no [tool.hf-jobs] block — passing through"
+   (exit 0 on dry-run). Fix: local-looking `.py` path that isn't a file → "script not found".
+3. No spend visibility in the echo: `--timeout` (and the 30m default) never shown;
+   flavor shown without cost. Fix: echo `timeout = 30m (default)` + `~$/h` next to flavor
+   (reuse `top`'s cost table) — ties into the budget-model design.
+
+Polish list (help-text wrapping, empty `--namespace`/`--token` help rows, missing
+provenance tag on the `secret =` echo line, document the dotenv double-quoting, state
+"these 5 keys are the whole schema") captured in the session UX report.
+
+Also observed in the real run: the first launch failed with the *script's own* clear
+error (output column exists — needed `--output-column`), with the header layer invisible
+in the failure. Delegation working as designed: jobsx owns the launch, the recipe owns
+its args.
