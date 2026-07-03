@@ -48,7 +48,11 @@ class JobsClient:
         return self._token
 
     def list_jobs(self) -> list[JobInfo]:
-        return self._api.list_jobs(namespace=self.namespace)
+        # HfApi.list_jobs is a lazy paginating GENERATOR. Materialize it here: callers
+        # store the result in shared monitor state and iterate it from multiple threads,
+        # and past page 1 (>100 jobs) the generator does HTTP mid-iteration —
+        # concurrent iteration raises "ValueError: generator already executing".
+        return list(self._api.list_jobs(namespace=self.namespace))
 
     def get_job(self, job_id: str) -> JobInfo:
         return self._api.inspect_job(job_id=job_id, namespace=self.namespace)

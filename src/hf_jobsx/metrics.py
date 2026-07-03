@@ -140,6 +140,10 @@ class MonitorState:
         self.pricing: dict = {}  # dict[str, JobHardwareInfo]
 
     def set_jobs(self, jobs: list) -> None:
+        # Coerce BEFORE the lock: a lazy iterable stored as shared state gets iterated
+        # from several threads (renderer, log-poller) → "generator already executing";
+        # and HfApi.list_jobs paginates lazily, so iterating can do network I/O.
+        jobs = list(jobs)
         with self._lock:
             self.jobs = jobs
             for j in jobs:

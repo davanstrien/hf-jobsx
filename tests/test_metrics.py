@@ -199,3 +199,16 @@ def test_monitor_state_set_and_snapshot():
     assert len(snap["jobs"]) == 1
     assert snap["rings"]["abc123def456"][0].cpu_pct == 10
     assert snap["tail_logs"]["abc123def456"] == "hello"
+
+
+def test_monitor_state_set_jobs_materializes_generator():
+    # HfApi.list_jobs is a lazy paginating generator; if stored as-is, concurrent
+    # iteration from the renderer + log-poller threads raises
+    # "ValueError: generator already executing". set_jobs must materialize it.
+    state = MonitorState()
+    state.set_jobs(make_job() for _ in range(2))
+    assert isinstance(state.jobs, list)
+    assert len(state.jobs) == 2
+    # Repeated reads must not exhaust anything.
+    assert len(state.snapshot()["jobs"]) == 2
+    assert len(state.snapshot()["jobs"]) == 2
