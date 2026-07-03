@@ -210,14 +210,18 @@ def _dotenv_quote(value: str) -> str:
     Native re-parses each ``--env KEY=VALUE`` token with huggingface_hub's dotenv
     grammar (``huggingface_hub.utils._dotenv.load_dotenv``), whose UNQUOTED form
     treats ``#`` as a comment start — ``QUERY=a#b`` arrives as ``a``. Emit the
-    double-quoted form instead, escaped per that parser's unescape rules (it applies
-    ``\\n``, ``\\t``, ``\\"``, ``\\\\``, then ``\\$`` as sequential replaces).
+    double-quoted form instead, escaped per that parser's unescape rules. (hub ≤1.21
+    unescapes via sequential replaces ``\\n``, ``\\t``, ``\\"``, ``\\\\``, ``\\$``;
+    ≥1.22 uses a single-pass ``re.sub`` — our output round-trips identically under
+    both; verified against each.)
 
-    Those sequential replaces cannot represent a literal backslash followed by ``n``
-    or ``t`` (the earlier ``\\n``/``\\t`` replace always fires first); raise rather
-    than deliver a silently corrupted value. Same for the exotic line separators the
-    parser's ``splitlines()`` splits on but its escapes can't encode (``\\r``, ``\\v``,
-    ``\\f``, U+001C–U+001E, U+0085, U+2028, U+2029).
+    The ≤1.21 sequential replaces cannot represent a literal backslash followed by
+    ``n`` or ``t`` (the earlier ``\\n``/``\\t`` replace always fires first); raise
+    rather than deliver a silently corrupted value while those versions are in the
+    wild (≥1.22 handles them — relax this if the floor ever rises). Same, on ALL
+    versions, for the exotic line separators the parser's ``splitlines()`` splits on
+    but its escapes can't encode (``\\r``, ``\\v``, ``\\f``, U+001C–U+001E, U+0085,
+    U+2028, U+2029).
     """
     if re.search(r"\\[nt]", value):
         raise ValueError(
