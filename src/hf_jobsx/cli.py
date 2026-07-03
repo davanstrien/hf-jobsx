@@ -223,13 +223,10 @@ def top(
     include scheduling/error/completed jobs too. Press j/k to move, Enter for logs,
     s for ssh, q to quit.
     """
-    from hf_jobsx.fake import fake_client, is_fake_enabled
     from hf_jobsx.render import run_top
 
-    if is_fake_enabled():
-        client = fake_client(token=token, namespace=namespace)
-    else:
-        client = get_client(namespace=namespace, token=token)
+    # get_client honors HF_JOBSX_FAKE, so fake mode needs no special-casing here.
+    client = get_client(namespace=namespace, token=token)
     run_top(client=client, refresh=refresh, limit=limit, running_only=not all_jobs)
 
 

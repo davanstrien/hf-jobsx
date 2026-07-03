@@ -16,12 +16,15 @@ def _run(
     timeout: float = _SUBPROCESS_TIMEOUT,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
+    # NO_COLOR: Rich colorizes usage errors on CI runners (but not local pipes),
+    # which puts ANSI codes inside the strings assertions grep for. Force plain.
+    merged_env = {**(env if env is not None else os.environ), "NO_COLOR": "1", "COLUMNS": "120"}
     return subprocess.run(
         [sys.executable, "-m", "hf_jobsx", *args],
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=env,
+        env=merged_env,
     )
 
 
@@ -185,7 +188,11 @@ def test_pick_is_honest_stub():
 
 
 def test_bad_selector_exits_clean():
-    """A garbage selector exits non-zero with a message — no traceback, no hang."""
-    result = _run("resolve", "@status=pending")
+    """A garbage selector exits non-zero with a message — no traceback, no hang.
+
+    Runs in fake mode: deterministic offline/logged-out (CI has no HF token, and
+    without fake mode this would hit the real jobs API when a token IS present).
+    """
+    result = _run("resolve", "@status=pending", env={**os.environ, "HF_JOBSX_FAKE": "1"})
     assert result.returncode != 0
     assert "unknown status" in result.stderr.lower()
