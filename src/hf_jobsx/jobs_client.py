@@ -70,5 +70,14 @@ class JobsClient:
 
 
 def get_client(*, namespace: str | None, token: str | None) -> JobsClient:
-    """Factory used by CLI commands. Returns a fresh client each invocation."""
+    """Factory used by CLI commands. Returns a fresh client each invocation.
+
+    Honors ``HF_JOBSX_FAKE=1`` (see ``fake.py``) so EVERY command — not just ``top`` —
+    can run against the deterministic fake roster: demos, screenshots, and smoke tests
+    that must work offline/logged-out (CI).
+    """
+    from hf_jobsx.fake import fake_client, is_fake_enabled
+
+    if is_fake_enabled():
+        return fake_client(token=token, namespace=namespace)
     return JobsClient(token=token, namespace=namespace)
