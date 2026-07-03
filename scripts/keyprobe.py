@@ -4,6 +4,7 @@ what your terminal sends for arrows (and fix _read_key precisely later).
 Run: uv run python3 scripts/keyprobe.py
 Press keys; Ctrl-C to quit.
 """
+
 import select
 import sys
 import termios
@@ -27,7 +28,10 @@ try:
         raw = ch + rest
         esc = raw.encode("utf-8").decode("unicode_escape").encode("latin1").decode("unicode_escape")
         label = {
-            "\x1b[A": "↑ UP", "\x1b[B": "↓ DOWN", "\x1b[C": "→ RIGHT", "\x1b[D": "← LEFT",
+            "\x1b[A": "↑ UP",
+            "\x1b[B": "↓ DOWN",
+            "\x1b[C": "→ RIGHT",
+            "\x1b[D": "← LEFT",
         }.get(raw, "")
         print(f"  {raw!r:20} bytes={[ord(c) for c in raw]}  {label}")
         sys.stdout.flush()

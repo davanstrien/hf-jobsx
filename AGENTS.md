@@ -63,15 +63,22 @@ Tests use the **real `JobInfo` constructor**, never `MagicMock` strings — that
 
 ## Open issues
 
-Tracked here (no GitHub issues yet for a private repo). Strike through when fixed.
+Tracked here (repo is public but small; this list is the issue tracker). Strike through when fixed.
 
 - [ ] **`pick` is a stub** (Phase 2). fzf-based jump-picker → exec into logs/ssh. See `pick.py` + SPEC §6 Phase 2.
 - [ ] **Arrow-key navigation in `top` unreliable** in some terminals; `j`/`k` always work. `_read_key` reads exactly 2 bytes after ESC; terminals that send sequences differently (or with latency) get misread. `scripts/keyprobe.py` captures raw bytes to diagnose per-terminal. Likely fix: drain bytes one-at-a-time with short waits instead of `read(2)`.
 - [ ] **`_started` is a module-global** (`render.py`), never reset between runs. Harmless (each CLI invocation is a fresh process) but architecturally smelly — should be instance state on `MetricsFanIn`. The `_started_lock` is also unnecessary (only the main thread mutates it).
 - [ ] **Lockless reads of `state.jobs`** in `_poll_logs_loop` / `_maybe_start_new_streams`. Safe under CPython's GIL (the list ref is replaced atomically, never mutated), but not free-threading-safe. Document or route through the lock.
-- [ ] **No CI.** Add a GitHub Actions workflow: `uv sync && uv run ruff check && uv run pytest`. Worth doing before going public.
+- [x] ~~**No CI.**~~ GitHub Actions workflow added (`.github/workflows/ci.yml`): ruff + pytest on 3.10 (tomli fallback path) and 3.13.
 - [ ] **Planned features (SPEC §1):** `tail @all` (multi-job interleaved log mux), `watch --json` (NDJSON metrics — the agent-enabler), `doctor`/`logs --summarize` (agent-in-the-loop). Each documented in SPEC; none built.
 - [ ] **`_drill_subprocess` in fake mode** shells out to real `hf jobs logs <fake-id>` which 404s. Back-navigation only makes end-to-end sense against real jobs. (Acceptable for now; fake is for monitor-UI dev.)
+
+Deferred from the 2026-07 `run` deep review (nits, not bugs — deliberately not fixed then):
+
+- [ ] **Bare `-e KEY` diverges from native for the stored login**: native's extended environ resolves `HF_TOKEN` via `get_token()` even when the env var is unset; jobsx checks `os.environ` only, so a logged-in user gets "not set in your environment, skipping". Also: jobsx materializes the resolved value into the exec'd argv (`ps`-visible, echoed in `--dry-run`), where native resolves bare keys in-process. Fine for ordinary vars; nudge users to `-s` for anything sensitive.
+- [ ] **URL scripts are fetched twice** — once client-side for the header, once by native/remote for the run. Cheap fix if it ever matters: stream + read a bounded prefix (the PEP 723 block must be at the top).
+- [ ] **`resolve(header, overrides)` takes a stringly-typed dict** — a typo'd key ("secret" vs "secrets") is silently ignored. Keyword params would let the type checker catch it and drop the `{"env": {}, "secrets": []}` boilerplate from ~10 test call sites.
+- [ ] **The "silent corrupt run / error sentinel" motivation story is told in ~5 places** (runspec docstring, cli docstring, README, example, test preamble). One canonical telling (README) + pointers would stop drift.
 
 ## Conventions
 
