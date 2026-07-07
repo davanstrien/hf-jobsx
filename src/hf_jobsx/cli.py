@@ -359,8 +359,6 @@ def run(
     except ValueError as e:
         _die(str(e))
 
-    for warning in resolved.warnings:
-        typer.secho(f"jobsx: {warning}", err=True, fg=typer.colors.YELLOW)
     if resolved.echo:
         typer.secho("jobsx: resolved runtime (header + overrides):", err=True, fg=typer.colors.CYAN)
         for line in resolved.echo:

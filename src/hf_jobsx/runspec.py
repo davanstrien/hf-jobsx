@@ -49,8 +49,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on py<3.11
 # PEP 723 reference regex (https://peps.python.org/pep-0723/#reference-implementation).
 _PEP723_RE = re.compile(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
 
-# Keys we translate into native `hf jobs uv run` flags. Everything else in the block
-# is surfaced as a warning rather than silently dropped.
+# Keys we translate into native `hf jobs uv run` flags. Anything else in the block is
+# rejected at parse time — a typo like `flavour` should fail loudly, not be dropped.
 KNOWN_KEYS = {"image", "flavor", "python", "env", "secrets"}
 
 # Scalar key -> native long flag.
@@ -74,7 +74,6 @@ class Resolved:
 
     flags: list[str] = field(default_factory=list)  # native flag argv (no script)
     echo: list[str] = field(default_factory=list)  # human-readable "key = val (source)"
-    warnings: list[str] = field(default_factory=list)
 
 
 def extract_script_block(text: str) -> str | None:
@@ -100,10 +99,11 @@ def parse_runtime(text: str) -> dict:
     """Extract the ``[tool.hf-jobs]`` table from a script's text. ``{}`` if absent.
 
     Raises ``ValueError`` if the header exists but is unusable — malformed TOML, a
-    ``tool``/``hf-jobs`` value that isn't a table, or known keys with the wrong TOML
-    type — so the CLI can fail loudly (a broken header is a bug worth surfacing, not
-    swallowing). All header validation happens here, at parse time, so every bad
-    header surfaces as one clean error instead of a traceback later in ``resolve``.
+    ``tool``/``hf-jobs`` value that isn't a table, an unknown key, or known keys with
+    the wrong TOML type — so the CLI can fail loudly (a broken header is a bug worth
+    surfacing, not swallowing). All header validation happens here, at parse time, so
+    every bad header surfaces as one clean error instead of a traceback later in
+    ``resolve``.
     """
     block = extract_script_block(text)
     if block is None:
@@ -128,12 +128,20 @@ def parse_runtime(text: str) -> dict:
 
 
 def _validate_header(table: dict) -> None:
-    """Reject wrong-typed ``[tool.hf-jobs]`` values with an actionable message.
+    """Reject unknown keys and wrong-typed ``[tool.hf-jobs]`` values with an actionable message.
 
-    TOML happily encodes ``flavor = 4`` or ``env = { DEBUG = true }``; silently
-    Python-stringifying those (``--flavor 4``, ``--env DEBUG=True``) hands the job a
-    value the author never wrote. Require TOML strings and say so.
+    A misspelled key (``flavour`` for ``flavor``) is a silent bug — the author's intent
+    is dropped — so name it and list the valid keys. Likewise TOML happily encodes
+    ``flavor = 4`` or ``env = { DEBUG = true }``; silently Python-stringifying those
+    (``--flavor 4``, ``--env DEBUG=True``) hands the job a value the author never wrote.
+    Require TOML strings and say so.
     """
+    unknown = set(table) - KNOWN_KEYS
+    if unknown:
+        raise ValueError(
+            f"[tool.hf-jobs] unknown key(s): {', '.join(sorted(unknown))} — "
+            f"valid keys are {', '.join(sorted(KNOWN_KEYS))}"
+        )
     for key, _ in _SCALAR_FLAGS:
         value = table.get(key)
         if value is not None and not isinstance(value, str):
@@ -265,10 +273,6 @@ def resolve(header: dict, overrides: dict) -> Resolved:
     `env` merges per-key (override keys win); `secrets` unions (order-preserving).
     """
     out = Resolved()
-
-    unknown = set(header) - KNOWN_KEYS
-    if unknown:
-        out.warnings.append(f"ignoring unknown [tool.hf-jobs] key(s): {', '.join(sorted(unknown))}")
 
     for key, flag in _SCALAR_FLAGS:
         override = overrides.get(key)

@@ -81,15 +81,13 @@ def test_resolve_header_only_builds_expected_flags():
         "--secrets",
         "HF_TOKEN",
     ]
-    assert not resolved.warnings
 
 
-def test_timeout_in_header_warns_as_unknown_key():
+def test_timeout_in_header_raises_as_unknown_key():
     # timeout is deliberately NOT a header key (run/data-dependent + a spend cap).
-    # A stray one should surface as an unknown-key warning, not silently emit a flag.
-    resolved = runspec.resolve({"image": "x", "timeout": "2h"}, {"env": {}, "secrets": []})
-    assert resolved.flags == ["--image", "x"]
-    assert any("timeout" in w for w in resolved.warnings)
+    # A stray one must fail loudly as an unknown key, not silently emit a flag.
+    with pytest.raises(ValueError, match="unknown key"):
+        runspec.parse_runtime(_header('[tool.hf-jobs]\nimage = "x"\ntimeout = "2h"'))
 
 
 def test_override_beats_header():
@@ -126,10 +124,12 @@ def test_secrets_scalar_string_is_accepted():
     assert resolved.flags == ["--secrets", "HF_TOKEN"]
 
 
-def test_unknown_key_warns_but_does_not_crash():
-    resolved = runspec.resolve({"gpu": "h100", "image": "x"}, {"env": {}, "secrets": []})
-    assert resolved.flags == ["--image", "x"]
-    assert any("gpu" in w for w in resolved.warnings)
+def test_unknown_key_raises_and_lists_valid_keys():
+    with pytest.raises(ValueError, match="unknown key") as exc:
+        runspec.parse_runtime(_header('[tool.hf-jobs]\ngpu = "h100"\nimage = "x"'))
+    # the message must name the offending key and point at the valid set
+    assert "gpu" in str(exc.value)
+    assert "flavor" in str(exc.value)
 
 
 def test_no_header_yields_no_flags():
